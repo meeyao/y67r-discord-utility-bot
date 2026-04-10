@@ -246,6 +246,22 @@ class _ConvertClient(discord.Client):
         except ValueError:
             await message.reply("Provide a numeric ID.", mention_author=False)
 
+    async def _handle_slash_command(self, interaction: discord.Interaction, query: str, alias: Optional[str] = None) -> None:
+        try:
+            response = await self.service.handle(query, invoked_alias=alias)
+            if response is None:
+                await interaction.response.send_message("Sorry, I couldn't process that command.", ephemeral=True)
+                return
+            await interaction.response.send_message(response.content)
+            for extra in response.extra_messages:
+                await interaction.channel.send(extra)
+        except Exception as exc:
+            logging.exception("Slash command failed: %s", exc)
+            await interaction.response.send_message(
+                "Sorry, I couldn't process that. Try again in a moment.",
+                ephemeral=True,
+            )
+
     async def _add_reminder_logic(self, author, target_id, target_type, target_display, text, guild_id, reminder_type='one-time', scheduled_time=None):
         from_user = author.display_name or str(author)
         prefix = "Daily reminder" if reminder_type == 'daily' else "Reminder"
@@ -302,6 +318,41 @@ class _ConvertClient(discord.Client):
         return None
 
     def _register_app_commands(self) -> None:
+        @self.tree.command(name="convert", description="Convert units or currency, e.g. '5kg to lbs' or '100 USD to EUR'.")
+        @app_commands.describe(query="What to convert, e.g. '5kg to lbs'")
+        async def slash_convert(interaction: discord.Interaction, query: str) -> None:
+            await self._handle_slash_command(interaction, query)
+
+        @self.tree.command(name="weather", description="Check the weather for a location.")
+        @app_commands.describe(location="The location to check weather for.")
+        async def slash_weather(interaction: discord.Interaction, location: str) -> None:
+            await self._handle_slash_command(interaction, location, "weather")
+
+        @self.tree.command(name="roll", description="Roll some dice, e.g. '2d6'.")
+        @app_commands.describe(dice="The dice to roll, e.g. '2d6'. Defaults to 1d100 if empty.")
+        async def slash_roll(interaction: discord.Interaction, dice: Optional[str] = None) -> None:
+            await self._handle_slash_command(interaction, dice or "", "roll")
+
+        @self.tree.command(name="conch", description="Ask the Magic 8-Ball a question.")
+        @app_commands.describe(question="The question to ask.")
+        async def slash_conch(interaction: discord.Interaction, question: str) -> None:
+            # Question is just for flavor/logging, the service doesn't use it.
+            await self._handle_slash_command(interaction, "", "conch")
+
+        @self.tree.command(name="time", description="Check the current time in a location.")
+        @app_commands.describe(location="The location to check time for.")
+        async def slash_time(interaction: discord.Interaction, location: str) -> None:
+            await self._handle_slash_command(interaction, location, "time")
+
+        @self.tree.command(name="urban", description="Look up a term on Urban Dictionary.")
+        @app_commands.describe(term="The term to look up.")
+        async def slash_urban(interaction: discord.Interaction, term: str) -> None:
+            await self._handle_slash_command(interaction, term, "urban")
+
+        @self.tree.command(name="temps", description="Show system temperatures.")
+        async def slash_temps(interaction: discord.Interaction) -> None:
+            await self._handle_slash_command(interaction, "", "temps")
+
         @self.tree.command(name="remind", description="Set a one-time reminder for a user or role (when they next chat).")
         @app_commands.describe(target="The user or role to remind", message="The reminder message")
         async def slash_remind(interaction: discord.Interaction, target: discord.User | discord.Role, message: str) -> None:
