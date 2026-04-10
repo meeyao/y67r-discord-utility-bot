@@ -1,0 +1,35 @@
+discord:
+  # You can keep the token here for local testing, but prefer the CONVERTCORD_TOKEN env var.
+  token: "YOUR_DISCORD_BOT_TOKEN"
+  # The alias is the literal trigger word, defaulting to "$convert".
+  alias: "$convert"
+  # Optional list of extra aliases with their own triggers.
+  additional_aliases:
+    - "$currency"
+    - "!roll"
+    - "!conch"
+    - "!time"
+    - "!weather"
+    - "%"
+  # Optional safety rails. Leave empty to allow every channel / guild the bot can see.
+  allowed_channel_ids: []
+  allowed_guild_ids: []
+  status: "metric ↔ imperial"
+
+currency:
+  # Targets that will be shown when the user omits the destination currency.
+  default_targets:
+    - USD
+    - EUR
+    - CAD
+    - GBP
+  cache_minutes: 180
+  api_url: https://open.er-api.com/v6/latest/{base}
+
+sanitize:
+  # Toggle per-platform link rewriting. Set twitch: false to keep Discord's native Twitch embeds.
+  instagram: true
+  reddit: true
+  tiktok: true
+  twitch: true
+  twitter: true
