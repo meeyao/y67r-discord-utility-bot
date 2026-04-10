@@ -4,15 +4,18 @@ import asyncio
 import logging
 import os
 import re
+from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Set
 
 import aiohttp
 import discord
 from discord import app_commands
+from discord.ext import tasks
 
 from .config import AppConfig, load_config, resolve_aliases, resolve_token, update_sanitize_config
 from .conversions import MeasurementConverter, TemperatureConverter
 from .currency import CurrencyConverter
+from .reminders import ReminderManager
 from .sanitize import SanitizePlatforms, contains_url, extract_and_sanitize
 from .service import ConvertService
 
@@ -39,6 +42,7 @@ def build_client(
 
 class _ConvertClient(discord.Client):
     REMIND_TRIGGERS = ("!remind", "$remind", "$n", "!n", "$notify")
+    DAILY_REMIND_TRIGGERS = ("!daily-remind", "$daily-remind", "!dr", "$dr")
 
     def __init__(
         self,
@@ -52,6 +56,7 @@ class _ConvertClient(discord.Client):
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True  # Needed for role reminders
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.service = service
@@ -68,7 +73,7 @@ class _ConvertClient(discord.Client):
         self.allowed_guilds: Set[int] = {int(gid) for gid in allowed_guild_ids if gid}
         self.config_path = config_path
         self.sanitize_platforms = sanitize_platforms
-        self._reminders: Dict[int, List[str]] = {}
+        self.reminder_manager = ReminderManager()
         self._commands_synced = False
         self._register_app_commands()
 
@@ -83,6 +88,8 @@ class _ConvertClient(discord.Client):
                 type=discord.ActivityType.listening,
             )
             await self.change_presence(activity=activity)
+        if not self.daily_reminder_task.is_running():
+            self.daily_reminder_task.start()
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or not message.content:
@@ -107,6 +114,14 @@ class _ConvertClient(discord.Client):
                 await message.reply("\n".join(sanitized_links), mention_author=False)
 
         lower_content = content.lower()
+        daily_reminder_prefix = next(
+            (trigger for trigger in self.DAILY_REMIND_TRIGGERS if lower_content.startswith(trigger)),
+            None,
+        )
+        if daily_reminder_prefix:
+            await self._handle_daily_remind(message, daily_reminder_prefix)
+            return
+
         reminder_prefix = next(
             (trigger for trigger in self.REMIND_TRIGGERS if lower_content.startswith(trigger)),
             None,
@@ -151,36 +166,154 @@ class _ConvertClient(discord.Client):
 
     async def _handle_remind(self, message: discord.Message, trigger: str) -> None:
         body = message.content[len(trigger) :].strip()
-        if not message.mentions:
+        target_id: Optional[int] = None
+        target_type: str = "user"
+        target_display: str = ""
+
+        if message.mentions:
+            target = message.mentions[0]
+            if target.bot:
+                await message.reply("I can't set reminders for bots.", mention_author=False)
+                return
+            target_id = target.id
+            target_display = target.display_name or str(target)
+            mention_pattern = re.compile(rf"<@!?\s*{target_id}>")
+            reminder_text = mention_pattern.sub("", body, count=1).strip()
+        elif message.role_mentions:
+            role = message.role_mentions[0]
+            target_id = role.id
+            target_type = "role"
+            target_display = role.name
+            mention_pattern = re.compile(rf"<@&\s*{target_id}>")
+            reminder_text = mention_pattern.sub("", body, count=1).strip()
+        else:
             await message.reply(
-                "Please mention a user to remind, e.g. `!remind @user take a break`.",
+                "Please mention a user or role to remind, e.g. `!remind @user take a break`.",
                 mention_author=False,
             )
             return
-        target = message.mentions[0]
-        if target.bot:
-            await message.reply("I can't set reminders for bots.", mention_author=False)
-            return
-        mention_pattern = re.compile(rf"<@!?\s*{target.id}>")
-        reminder_text = mention_pattern.sub("", body, count=1).strip()
+
         if not reminder_text:
             await message.reply(
-                "Add a reminder message after the mention, e.g. `!remind @user stretch`.",
+                f"Add a reminder message after the mention, e.g. `{trigger} @{target_display} stretch`.",
                 mention_author=False,
             )
             return
+
         from_user = message.author.display_name or str(message.author)
         entry = f"Reminder from {from_user}: {reminder_text}"
-        self._reminders.setdefault(target.id, []).append(entry)
+        
+        await self.reminder_manager.add_reminder(
+            target_id=target_id,
+            target_type=target_type,
+            guild_id=message.guild.id if message.guild else 0,
+            content=entry
+        )
+        
         await message.reply(
-            f"Got it! I'll remind {target.display_name or target.mention} next time they chat.",
+            f"Got it! I'll remind {target_display} next time they chat (or someone in the role chats).",
+            mention_author=False,
+        )
+
+    async def _handle_daily_remind(self, message: discord.Message, trigger: str) -> None:
+        body = message.content[len(trigger) :].strip()
+        # Syntax: !daily-remind <@user|@role> HH:MM <content>
+        parts = body.split(maxsplit=2)
+        if len(parts) < 3:
+            await message.reply(
+                f"Usage: `{trigger} <@user|@role> HH:MM <message>` (Time in 24h format, e.g. 09:00)",
+                mention_author=False,
+            )
+            return
+
+        target_mention = parts[0]
+        scheduled_time = parts[1]
+        reminder_text = parts[2]
+
+        # Validate time format
+        if not re.match(r"^\d{2}:\d{2}$", scheduled_time):
+            await message.reply("Invalid time format. Please use HH:MM (24h format).", mention_author=False)
+            return
+
+        target_id: Optional[int] = None
+        target_type: str = "user"
+        target_display: str = ""
+
+        if message.mentions:
+            target = message.mentions[0]
+            target_id = target.id
+            target_display = target.display_name or str(target)
+        elif message.role_mentions:
+            role = message.role_mentions[0]
+            target_id = role.id
+            target_type = "role"
+            target_display = role.name
+        else:
+            await message.reply("Please mention a user or role for the daily reminder.", mention_author=False)
+            return
+
+        from_user = message.author.display_name or str(message.author)
+        entry = f"Daily reminder from {from_user}: {reminder_text}"
+
+        await self.reminder_manager.add_reminder(
+            target_id=target_id,
+            target_type=target_type,
+            guild_id=message.guild.id if message.guild else 0,
+            content=entry,
+            reminder_type='daily',
+            scheduled_time=scheduled_time
+        )
+
+        await message.reply(
+            f"Daily reminder set for {target_display} at {scheduled_time}.",
             mention_author=False,
         )
 
     async def _deliver_reminders(self, message: discord.Message) -> None:
-        pending = self._reminders.pop(message.author.id, [])
-        for reminder in pending:
-            await message.reply(reminder, mention_author=False)
+        guild_id = message.guild.id if message.guild else 0
+        
+        # User reminders
+        pending_user = await self.reminder_manager.get_message_reminders(message.author.id, guild_id)
+        for r in pending_user:
+            await message.reply(r.content, mention_author=False)
+            await self.reminder_manager.delete_reminder(r.id)
+            
+        # Role reminders
+        if message.guild and isinstance(message.author, discord.Member):
+            for role in message.author.roles:
+                pending_role = await self.reminder_manager.get_message_reminders(role.id, guild_id)
+                for r in pending_role:
+                    await message.reply(f"({role.name}) {r.content}", mention_author=False)
+                    await self.reminder_manager.delete_reminder(r.id)
+
+    @tasks.loop(minutes=1)
+    async def daily_reminder_task(self):
+        now = datetime.now().strftime("%H:%M")
+        reminders = await self.reminder_manager.get_daily_reminders(now)
+        for r in reminders:
+            guild = self.get_guild(r.guild_id)
+            if not guild:
+                continue
+            
+            # Find a suitable channel to send the reminder
+            channel = None
+            if self.allowed_channels:
+                for cid in self.allowed_channels:
+                    channel = guild.get_channel(cid)
+                    if channel:
+                        break
+            if not channel:
+                channel = guild.system_channel or guild.text_channels[0]
+            
+            if not channel:
+                continue
+
+            if r.target_type == 'user':
+                mention = f"<@{r.target_id}>"
+            else:
+                mention = f"<@&{r.target_id}>"
+            
+            await channel.send(f"{mention} {r.content}")
 
     def _match_alias(self, content: str) -> Optional[tuple[str, str]]:
         lower_content = content.lower()
@@ -213,6 +346,35 @@ class _ConvertClient(discord.Client):
         return None
 
     def _register_app_commands(self) -> None:
+        @self.tree.command(name="reminders-list", description="List all reminders for this server.")
+        @app_commands.guild_only()
+        async def reminders_list(interaction: discord.Interaction) -> None:
+            reminders = await self.reminder_manager.get_all_reminders(interaction.guild_id)
+            if not reminders:
+                await interaction.response.send_message("No reminders found for this server.", ephemeral=True)
+                return
+
+            lines = []
+            for r in reminders:
+                target = f"<@{r.target_id}>" if r.target_type == 'user' else f"<@&{r.target_id}>"
+                time_info = f" at {r.scheduled_time} (Daily)" if r.scheduled_time else " (On chat)"
+                lines.append(f"ID: {r.id} | {target} | {r.content[:30]}...{time_info}")
+
+            await interaction.response.send_message("Current reminders:\n" + "\n".join(lines), ephemeral=True)
+
+        @self.tree.command(name="reminders-delete", description="Delete a reminder by ID.")
+        @app_commands.guild_only()
+        @app_commands.describe(reminder_id="The ID of the reminder to delete.")
+        async def reminders_delete(interaction: discord.Interaction, reminder_id: int) -> None:
+            # Check if reminder exists and belongs to this guild
+            reminders = await self.reminder_manager.get_all_reminders(interaction.guild_id)
+            if not any(r.id == reminder_id for r in reminders):
+                await interaction.response.send_message(f"Reminder ID {reminder_id} not found in this server.", ephemeral=True)
+                return
+
+            await self.reminder_manager.delete_reminder(reminder_id)
+            await interaction.response.send_message(f"Deleted reminder ID {reminder_id}.", ephemeral=True)
+
         @self.tree.command(name="sanitize-status", description="Show the current link sanitization settings.")
         @app_commands.guild_only()
         @app_commands.default_permissions(manage_guild=True)
