@@ -206,8 +206,8 @@ class _ConvertClient(discord.Client):
             await message.reply("Please add a reminder message.", mention_author=False)
             return
 
-        await self._add_reminder_logic(message.author, target_id, target_type, target_display, reminder_text, message.guild.id if message.guild else 0)
-        await message.reply(f"Got it! I'll remind {target_display} next time they chat.", mention_author=False)
+        await self._add_reminder_logic(message.author, target_id, target_type, target_display, reminder_text, message.guild.id if message.guild else 0, channel_id=message.channel.id)
+        await message.reply(f"Got it! I'll remind {target_display} when they next talk in this channel.", mention_author=False)
 
     async def _handle_prefix_daily_remind(self, message: discord.Message, alias: str, body: str) -> None:
         parts = body.split(maxsplit=2)
@@ -234,15 +234,15 @@ class _ConvertClient(discord.Client):
             await message.reply("Mention a user or role.", mention_author=False)
             return
 
-        await self._add_reminder_logic(message.author, target_id, target_type, target_display, reminder_text, message.guild.id if message.guild else 0, reminder_type='daily', scheduled_time=scheduled_time)
-        await message.reply(f"Daily reminder set for {target_display} at {scheduled_time}.", mention_author=False)
+        await self._add_reminder_logic(message.author, target_id, target_type, target_display, reminder_text, message.guild.id if message.guild else 0, channel_id=message.channel.id, reminder_type='daily', scheduled_time=scheduled_time)
+        await message.reply(f"Daily reminder set for {target_display} at {scheduled_time} in this channel.", mention_author=False)
 
     async def _handle_prefix_reminders_list(self, message: discord.Message) -> None:
         reminders = await self.reminder_manager.get_all_reminders(message.guild.id if message.guild else 0)
         if not reminders:
             await message.reply("No reminders found.", mention_author=False)
             return
-        lines = [f"ID: {r.id} | <@{'&' if r.target_type=='role' else ''}{r.target_id}> | {r.content[:30]}...{' at '+r.scheduled_time if r.scheduled_time else ''}" for r in reminders]
+        lines = [f"ID: {r.id} | <@{'&' if r.target_type=='role' else ''}{r.target_id}> | {r.content[:30]}...{' at '+r.scheduled_time if r.scheduled_time else ''} in <#{r.channel_id}>" for r in reminders]
         await message.reply("Current reminders:\n" + "\n".join(lines), mention_author=False)
 
     async def _handle_prefix_reminders_delete(self, message: discord.Message, body: str) -> None:
@@ -269,22 +269,22 @@ class _ConvertClient(discord.Client):
                 ephemeral=True,
             )
 
-    async def _add_reminder_logic(self, author, target_id, target_type, target_display, text, guild_id, reminder_type='one-time', scheduled_time=None):
+    async def _add_reminder_logic(self, author, target_id, target_type, target_display, text, guild_id, channel_id, reminder_type='one-time', scheduled_time=None):
         from_user = author.display_name or str(author)
         prefix = "Daily reminder" if reminder_type == 'daily' else "Reminder"
         entry = f"{prefix} from {from_user}: {text}"
-        await self.reminder_manager.add_reminder(target_id, target_type, guild_id, entry, reminder_type, scheduled_time)
+        await self.reminder_manager.add_reminder(target_id, target_type, guild_id, channel_id, entry, reminder_type, scheduled_time)
 
     async def _deliver_reminders(self, message: discord.Message) -> None:
         guild_id = message.guild.id if message.guild else 0
-        pending_user = await self.reminder_manager.get_message_reminders(message.author.id, guild_id)
+        pending_user = await self.reminder_manager.get_message_reminders(message.author.id, guild_id, message.channel.id)
         for r in pending_user:
             await message.reply(r.content, mention_author=False)
             await self.reminder_manager.delete_reminder(r.id)
             
         if message.guild and isinstance(message.author, discord.Member):
             for role in message.author.roles:
-                pending_role = await self.reminder_manager.get_message_reminders(role.id, guild_id)
+                pending_role = await self.reminder_manager.get_message_reminders(role.id, guild_id, message.channel.id)
                 for r in pending_role:
                     await message.reply(f"({role.name}) {r.content}", mention_author=False)
                     await self.reminder_manager.delete_reminder(r.id)
@@ -296,12 +296,15 @@ class _ConvertClient(discord.Client):
         for r in reminders:
             guild = self.get_guild(r.guild_id)
             if not guild: continue
-            channel = None
-            if self.allowed_channels:
-                for cid in self.allowed_channels:
-                    channel = guild.get_channel(cid)
-                    if channel: break
-            if not channel: channel = guild.system_channel or guild.text_channels[0]
+            channel = guild.get_channel(r.channel_id)
+            if not channel:
+                # Fallback if channel was deleted or bot lost access
+                if self.allowed_channels:
+                    for cid in self.allowed_channels:
+                        channel = guild.get_channel(cid)
+                        if channel: break
+                if not channel: channel = guild.system_channel or guild.text_channels[0]
+            
             if not channel: continue
             mention = f"<@{'&' if r.target_type=='role' else ''}{r.target_id}>"
             await channel.send(f"{mention} {r.content}")
@@ -360,22 +363,22 @@ class _ConvertClient(discord.Client):
         async def slash_temps(interaction: discord.Interaction) -> None:
             await self._handle_slash_command(interaction, "", "temps")
 
-        @self.tree.command(name="remind", description="Set a one-time reminder for a user or role (when they next chat).")
+        @self.tree.command(name="remind", description="Set a one-time reminder for a user or role (when they next chat in this channel).")
         @app_commands.describe(target="The user or role to remind", message="The reminder message")
         async def slash_remind(interaction: discord.Interaction, target: discord.User | discord.Role, message: str) -> None:
             target_type = "role" if isinstance(target, discord.Role) else "user"
-            await self._add_reminder_logic(interaction.user, target.id, target_type, target.name, message, interaction.guild_id or 0)
-            await interaction.response.send_message(f"Reminder set for {target.name}.", ephemeral=True)
+            await self._add_reminder_logic(interaction.user, target.id, target_type, target.name, message, interaction.guild_id or 0, channel_id=interaction.channel_id)
+            await interaction.response.send_message(f"Reminder set for {target.name} in this channel.", ephemeral=True)
 
-        @self.tree.command(name="daily-remind", description="Set a daily reminder at a specific time.")
+        @self.tree.command(name="daily-remind", description="Set a daily reminder at a specific time in this channel.")
         @app_commands.describe(target="The user or role to remind", time="Time in HH:MM (24h format)", message="The reminder message")
         async def slash_daily(interaction: discord.Interaction, target: discord.User | discord.Role, time: str, message: str) -> None:
             if not re.match(r"^\d{2}:\d{2}$", time):
                 await interaction.response.send_message("Invalid time format. Use HH:MM.", ephemeral=True)
                 return
             target_type = "role" if isinstance(target, discord.Role) else "user"
-            await self._add_reminder_logic(interaction.user, target.id, target_type, target.name, message, interaction.guild_id or 0, reminder_type='daily', scheduled_time=time)
-            await interaction.response.send_message(f"Daily reminder set for {target.name} at {time}.", ephemeral=True)
+            await self._add_reminder_logic(interaction.user, target.id, target_type, target.name, message, interaction.guild_id or 0, channel_id=interaction.channel_id, reminder_type='daily', scheduled_time=time)
+            await interaction.response.send_message(f"Daily reminder set for {target.name} at {time} in this channel.", ephemeral=True)
 
         @self.tree.command(name="reminders-list", description="List all reminders for this server.")
         async def slash_list(interaction: discord.Interaction) -> None:
@@ -383,7 +386,7 @@ class _ConvertClient(discord.Client):
             if not reminders:
                 await interaction.response.send_message("No reminders.", ephemeral=True)
                 return
-            lines = [f"ID: {r.id} | <@{'&' if r.target_type=='role' else ''}{r.target_id}> | {r.content[:30]}..." for r in reminders]
+            lines = [f"ID: {r.id} | <@{'&' if r.target_type=='role' else ''}{r.target_id}> | {r.content[:30]}... in <#{r.channel_id}>" for r in reminders]
             await interaction.response.send_message("Reminders:\n" + "\n".join(lines), ephemeral=True)
 
         @self.tree.command(name="reminders-delete", description="Delete a reminder.")
