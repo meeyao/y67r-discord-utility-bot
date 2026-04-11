@@ -128,6 +128,13 @@ class _ConvertClient(discord.Client):
         remainder = remainder.strip()
         lower_remainder = remainder.lower()
 
+        # Manual sync command for developers
+        if lower_remainder == "sync":
+            if message.author.guild_permissions.administrator:
+                await self.tree.sync(guild=message.guild)
+                await message.reply("Synced slash commands to this guild!", mention_author=False)
+            return
+
         # Handle reminder commands via prefix
         if lower_remainder.startswith(self.CMD_REMIND + " ") or lower_remainder == self.CMD_REMIND:
             await self._handle_prefix_remind(message, alias_used, remainder[len(self.CMD_REMIND):].strip())
