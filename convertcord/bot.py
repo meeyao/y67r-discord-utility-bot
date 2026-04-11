@@ -5,6 +5,7 @@ import logging
 import os
 import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import aiohttp
@@ -46,6 +47,7 @@ class _ConvertClient(discord.Client):
     CMD_DAILY_REMIND = "daily-remind"
     CMD_REMINDERS_LIST = "reminders-list"
     CMD_REMINDERS_DELETE = "reminders-delete"
+    CMD_TIMEZONE = "timezone"
 
     def __init__(
         self,
@@ -135,6 +137,11 @@ class _ConvertClient(discord.Client):
                 await message.reply("Synced slash commands to this guild!", mention_author=False)
             return
 
+        # Handle timezone command
+        if lower_remainder.startswith(self.CMD_TIMEZONE + " ") or lower_remainder == self.CMD_TIMEZONE:
+            await self._handle_prefix_timezone(message, alias_used, remainder[len(self.CMD_TIMEZONE):].strip())
+            return
+
         # Handle reminder commands via prefix
         if lower_remainder.startswith(self.CMD_REMIND + " ") or lower_remainder == self.CMD_REMIND:
             await self._handle_prefix_remind(message, alias_used, remainder[len(self.CMD_REMIND):].strip())
@@ -180,6 +187,17 @@ class _ConvertClient(discord.Client):
         for extra_message in response.extra_messages:
             await message.channel.send(extra_message)
 
+    async def _handle_prefix_timezone(self, message: discord.Message, alias: str, body: str) -> None:
+        if not body:
+            current = await self.reminder_manager.get_user_timezone(message.author.id)
+            if current:
+                await message.reply(f"Your current timezone is set to **{current}**. Use `{alias}{self.CMD_TIMEZONE} <location>` to change it.", mention_author=False)
+            else:
+                await message.reply(f"You haven't set a timezone yet! Use `{alias}{self.CMD_TIMEZONE} <city name or PST/EST>`.", mention_author=False)
+            return
+        
+        await self._set_timezone_logic(message, message.author, body)
+
     async def _handle_prefix_remind(self, message: discord.Message, alias: str, body: str) -> None:
         if not message.mentions and not message.role_mentions:
             await message.reply(
@@ -210,6 +228,12 @@ class _ConvertClient(discord.Client):
         await message.reply(f"Got it! I'll remind {target_display} when they next talk in this channel.", mention_author=False)
 
     async def _handle_prefix_daily_remind(self, message: discord.Message, alias: str, body: str) -> None:
+        # Check timezone first
+        tz = await self.reminder_manager.get_user_timezone(message.author.id)
+        if not tz:
+            await message.reply(f"Please set your timezone first using `{alias}{self.CMD_TIMEZONE} <city>`!", mention_author=False)
+            return
+
         parts = body.split(maxsplit=2)
         if len(parts) < 3:
             await message.reply(f"Usage: `{alias}{self.CMD_DAILY_REMIND} <@user|@role> HH:MM <message>`", mention_author=False)
@@ -235,10 +259,10 @@ class _ConvertClient(discord.Client):
             return
 
         await self._add_reminder_logic(message.author, target_id, target_type, target_display, reminder_text, message.guild.id if message.guild else 0, channel_id=message.channel.id, reminder_type='daily', scheduled_time=scheduled_time)
-        await message.reply(f"Daily reminder set for {target_display} at {scheduled_time} in this channel.", mention_author=False)
+        await message.reply(f"Daily reminder set for {target_display} at {scheduled_time} ({tz}) in this channel.", mention_author=False)
 
     async def _handle_prefix_reminders_list(self, message: discord.Message) -> None:
-        reminders = await self.reminder_manager.get_all_reminders(message.guild.id if message.guild else 0)
+        reminders = await self.reminder_manager.get_all_reminders_for_guild(message.guild.id if message.guild else 0)
         if not reminders:
             await message.reply("No reminders found.", mention_author=False)
             return
@@ -269,11 +293,38 @@ class _ConvertClient(discord.Client):
                 ephemeral=True,
             )
 
+    async def _set_timezone_logic(self, context_obj: discord.Message | discord.Interaction, user: discord.User | discord.Member, location_query: str):
+        # We leverage the existing ConvertService to resolve location -> timezone
+        location = await self.service._resolve_location(location_query)
+        if not location:
+            # Check for common abbreviations manually if location fails
+            tz_map = {"pst": "America/Los_Angeles", "est": "America/New_York", "bst": "Europe/London", "cet": "Europe/Paris", "gst": "Asia/Dubai", "ist": "Asia/Kolkata"}
+            tz_name = tz_map.get(location_query.lower().strip())
+        else:
+            tz_name = location.get("tz")
+            if not tz_name:
+                tz_name = await self.service._lookup_timezone(location["lat"], location["lon"])
+        
+        if not tz_name:
+            msg = f"I couldn't find a timezone for '{location_query}'. Try a city name like 'London' or 'New York'."
+            if isinstance(context_obj, discord.Interaction):
+                await context_obj.response.send_message(msg, ephemeral=True)
+            else:
+                await context_obj.reply(msg, mention_author=False)
+            return
+
+        await self.reminder_manager.set_user_timezone(user.id, tz_name)
+        msg = f"Timezone set to **{tz_name}**!"
+        if isinstance(context_obj, discord.Interaction):
+            await context_obj.response.send_message(msg, ephemeral=True)
+        else:
+            await context_obj.reply(msg, mention_author=False)
+
     async def _add_reminder_logic(self, author, target_id, target_type, target_display, text, guild_id, channel_id, reminder_type='one-time', scheduled_time=None):
         from_user = author.display_name or str(author)
         prefix = "Daily reminder" if reminder_type == 'daily' else "Reminder"
         entry = f"{prefix} from {from_user}: {text}"
-        await self.reminder_manager.add_reminder(target_id, target_type, guild_id, channel_id, entry, reminder_type, scheduled_time)
+        await self.reminder_manager.add_reminder(target_id, target_type, guild_id, channel_id, author.id, entry, reminder_type, scheduled_time)
 
     async def _deliver_reminders(self, message: discord.Message) -> None:
         guild_id = message.guild.id if message.guild else 0
@@ -291,23 +342,25 @@ class _ConvertClient(discord.Client):
 
     @tasks.loop(minutes=1)
     async def daily_reminder_task(self):
-        now = datetime.now().strftime("%H:%M")
-        reminders = await self.reminder_manager.get_daily_reminders(now)
+        reminders = await self.reminder_manager.get_all_daily_reminders()
         for r in reminders:
-            guild = self.get_guild(r.guild_id)
-            if not guild: continue
-            channel = guild.get_channel(r.channel_id)
-            if not channel:
-                # Fallback if channel was deleted or bot lost access
-                if self.allowed_channels:
-                    for cid in self.allowed_channels:
-                        channel = guild.get_channel(cid)
-                        if channel: break
-                if not channel: channel = guild.system_channel or guild.text_channels[0]
+            # Get the author's timezone
+            tz_name = await self.reminder_manager.get_user_timezone(r.author_id)
+            if not tz_name: continue
             
-            if not channel: continue
-            mention = f"<@{'&' if r.target_type=='role' else ''}{r.target_id}>"
-            await channel.send(f"{mention} {r.content}")
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception: continue
+            
+            # Check what time it is FOR THE AUTHOR
+            now_author = datetime.now(tz).strftime("%H:%M")
+            if now_author == r.scheduled_time:
+                guild = self.get_guild(r.guild_id)
+                if not guild: continue
+                channel = guild.get_channel(r.channel_id)
+                if not channel: continue
+                mention = f"<@{'&' if r.target_type=='role' else ''}{r.target_id}>"
+                await channel.send(f"{mention} {r.content}")
 
     def _match_alias(self, content: str) -> Optional[tuple[str, str]]:
         lower_content = content.lower()
@@ -322,12 +375,15 @@ class _ConvertClient(discord.Client):
             if remainder[0].isspace():
                 return alias, remainder.lstrip()
             # If no space, it must be followed by a command name
-            # This ensures we "respect" the prefix.
             return alias, remainder
-
         return None
 
     def _register_app_commands(self) -> None:
+        @self.tree.command(name="timezone", description="Set your personal timezone so daily reminders work correctly.")
+        @app_commands.describe(location="Your city or timezone (e.g. London, New York, PST)")
+        async def slash_timezone(interaction: discord.Interaction, location: str) -> None:
+            await self._set_timezone_logic(interaction, interaction.user, location)
+
         @self.tree.command(name="convert", description="Convert units or currency, e.g. '5kg to lbs' or '100 USD to EUR'.")
         @app_commands.describe(query="What to convert, e.g. '5kg to lbs'")
         async def slash_convert(interaction: discord.Interaction, query: str) -> None:
@@ -346,7 +402,6 @@ class _ConvertClient(discord.Client):
         @self.tree.command(name="conch", description="Ask the Magic 8-Ball a question.")
         @app_commands.describe(question="The question to ask.")
         async def slash_conch(interaction: discord.Interaction, question: str) -> None:
-            # Question is just for flavor/logging, the service doesn't use it.
             await self._handle_slash_command(interaction, "", "conch")
 
         @self.tree.command(name="time", description="Check the current time in a location.")
@@ -363,7 +418,7 @@ class _ConvertClient(discord.Client):
         async def slash_temps(interaction: discord.Interaction) -> None:
             await self._handle_slash_command(interaction, "", "temps")
 
-        @self.tree.command(name="remind", description="Set a one-time reminder for a user or role (when they next chat in this channel).")
+        @self.tree.command(name="remind", description="Set a one-time reminder (when you next chat in this channel).")
         @app_commands.describe(target="The user or role to remind", message="The reminder message")
         async def slash_remind(interaction: discord.Interaction, target: discord.User | discord.Role, message: str) -> None:
             target_type = "role" if isinstance(target, discord.Role) else "user"
@@ -373,16 +428,22 @@ class _ConvertClient(discord.Client):
         @self.tree.command(name="daily-remind", description="Set a daily reminder at a specific time in this channel.")
         @app_commands.describe(target="The user or role to remind", time="Time in HH:MM (24h format)", message="The reminder message")
         async def slash_daily(interaction: discord.Interaction, target: discord.User | discord.Role, time: str, message: str) -> None:
+            # Check timezone
+            tz = await self.reminder_manager.get_user_timezone(interaction.user.id)
+            if not tz:
+                await interaction.response.send_message("Please set your timezone first using `/timezone set`!", ephemeral=True)
+                return
+
             if not re.match(r"^\d{2}:\d{2}$", time):
                 await interaction.response.send_message("Invalid time format. Use HH:MM.", ephemeral=True)
                 return
             target_type = "role" if isinstance(target, discord.Role) else "user"
             await self._add_reminder_logic(interaction.user, target.id, target_type, target.name, message, interaction.guild_id or 0, channel_id=interaction.channel_id, reminder_type='daily', scheduled_time=time)
-            await interaction.response.send_message(f"Daily reminder set for {target.name} at {time} in this channel.", ephemeral=True)
+            await interaction.response.send_message(f"Daily reminder set for {target.name} at {time} ({tz}) in this channel.", ephemeral=True)
 
         @self.tree.command(name="reminders-list", description="List all reminders for this server.")
         async def slash_list(interaction: discord.Interaction) -> None:
-            reminders = await self.reminder_manager.get_all_reminders(interaction.guild_id or 0)
+            reminders = await self.reminder_manager.get_all_reminders_for_guild(interaction.guild_id or 0)
             if not reminders:
                 await interaction.response.send_message("No reminders.", ephemeral=True)
                 return
