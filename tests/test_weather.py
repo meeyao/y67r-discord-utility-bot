@@ -1,8 +1,12 @@
+import asyncio
 import unittest
 import tempfile
+from unittest.mock import Mock
 
 from convertcord import service
 from convertcord.service import (
+    ConversionError,
+    ConvertService,
     _describe_weather_code,
     _format_daily_forecast,
     _load_airport_code_index,
@@ -57,6 +61,24 @@ class WeatherFormattingTests(unittest.TestCase):
         self.assertEqual(index["AUH"]["display"], "Abu Dhabi (AUH), AE")
         self.assertAlmostEqual(index["AUH"]["lat"], 24.440966)
         self.assertAlmostEqual(index["AUH"]["lon"], 54.649237)
+
+    def test_handle_returns_user_error_when_weather_raises_conversion_error(self) -> None:
+        class FailingWeatherService(ConvertService):
+            async def _handle_weather(self, args):
+                raise ConversionError("Unable to fetch weather right now.")
+
+        weather_service = FailingWeatherService(
+            alias="!weather",
+            measurement_converter=Mock(),
+            temperature_converter=Mock(),
+            currency_converter=Mock(),
+            http_session=Mock(),
+        )
+
+        response = asyncio.run(weather_service.handle("AUH", invoked_alias="!weather"))
+
+        self.assertTrue(response.error)
+        self.assertEqual(response.content, "Unable to fetch weather right now.")
 
 
 if __name__ == "__main__":

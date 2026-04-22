@@ -10,7 +10,7 @@ ConvertCord is a lightweight Discord bot focused on quick conversions between me
 - Optional channel/guild allowlists plus configurable status text.
 - Built-in aliases let you add shortcut commands like `$roll`, `$conch`, `$time`, and `$weather`.
 - Quick utility commands: `%` for a random percentage, `$roll [sides]` to roll dice, `$conch` for a magic answer, `$time [city]`, and `$weather [city]` with current conditions plus a 3-day forecast.
-- Weather lookups can also accept airport codes from a CSV source when `CONVERTCORD_AIRPORT_CODES_CSV` is set, so queries like `!weather LAX`, `!weather AUH 12 hours`, or `!weather BOM 3 days` work without spelling out the city.
+- Weather lookups can also accept airport codes from the bundled CSV in `data/airport-codes.csv`, so queries like `!weather LAX`, `!weather AUH 12 hours`, or `!weather BOM 3 days` work without spelling out the city.
 
 ## Configuration
 1. Copy the example config and adjust it as needed:
@@ -31,7 +31,7 @@ Environment overrides:
 - `CONVERTCORD_TOKEN` – Discord bot token (takes precedence over the config file).
 - `CONVERTCORD_ALIAS` – Force the primary trigger alias without touching the config (e.g. `?conv`).
 - `CONVERTCORD_EXTRA_ALIASES` – Comma-delimited list of extra aliases (e.g. `$currency,$convert`) merged with config values.
-- `CONVERTCORD_AIRPORT_CODES_CSV` – Optional path to an airport code CSV used for IATA/ICAO weather lookups. If unset, airport-code weather lookups are disabled.
+- `CONVERTCORD_AIRPORT_CODES_CSV` – Optional override path for the airport code CSV used for IATA/ICAO weather lookups. By default the bot uses `data/airport-codes.csv` from the repo/image.
 
 ## Running locally
 ```bash

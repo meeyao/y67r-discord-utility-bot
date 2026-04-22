@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from functools import lru_cache
+from pathlib import Path
 from zoneinfo import ZoneInfo
 import random
 from difflib import SequenceMatcher
@@ -87,6 +88,7 @@ class ConvertService:
     INLINE_RE = re.compile(r"^([-+]?\d+[\d,\.]*)([a-z°]+)$", re.IGNORECASE)
     WEATHER_HOUR_RE = re.compile(r"^(\d{1,2})h$", re.IGNORECASE)
     WEATHER_DAY_RE = re.compile(r"^(\d{1,2})d$", re.IGNORECASE)
+    DEFAULT_AIRPORT_CODES_CSV = Path(__file__).resolve().parent.parent / "data" / "airport-codes.csv"
 
     def __init__(
         self,
@@ -131,29 +133,29 @@ class ConvertService:
             else:
                 return ServiceResponse(self._build_help_text(alias), error=True)
 
-        first = args[0].lower()
-        if first in {"help", "?", "commands"}:
-            return ServiceResponse(self._build_help_text(alias))
-        if first == "%":
-            return self._handle_percent(args[1:])
-        if first in {"roll", "!roll", "$roll"}:
-            return self._handle_roll(args[1:])
-        if first in {"conch", "$conch", "!conch"}:
-            return self._handle_conch()
-        if first in {"time", "$time", "!time"}:
-            return await self._handle_time(args[1:])
-        if first in {"weather", "$weather", "!weather"}:
-            return await self._handle_weather(args[1:])
-        if first in {"temps", "$temps", "!temps"}:
-            return await self._handle_temps()
-        if first in {"urban", "$urban", "!urban"}:
-            return await self._handle_urban(args[1:])
-        if first in {"smite", "$smite", "!smite"}:
-            return self._handle_smite()
-        if first in {"price", "$price", "stock", "$stock", "stocks", "crypto", "$crypto"}:
-            return None
-
         try:
+            first = args[0].lower()
+            if first in {"help", "?", "commands"}:
+                return ServiceResponse(self._build_help_text(alias))
+            if first == "%":
+                return self._handle_percent(args[1:])
+            if first in {"roll", "!roll", "$roll"}:
+                return self._handle_roll(args[1:])
+            if first in {"conch", "$conch", "!conch"}:
+                return self._handle_conch()
+            if first in {"time", "$time", "!time"}:
+                return await self._handle_time(args[1:])
+            if first in {"weather", "$weather", "!weather"}:
+                return await self._handle_weather(args[1:])
+            if first in {"temps", "$temps", "!temps"}:
+                return await self._handle_temps()
+            if first in {"urban", "$urban", "!urban"}:
+                return await self._handle_urban(args[1:])
+            if first in {"smite", "$smite", "!smite"}:
+                return self._handle_smite()
+            if first in {"price", "$price", "stock", "$stock", "stocks", "crypto", "$crypto"}:
+                return None
+
             amount, from_unit, to_unit = self._parse_parts(args)
             result = await self._perform_conversion(amount, from_unit, to_unit, alias)
             text = self._format_result(result)
@@ -615,6 +617,8 @@ class ConvertService:
             return None
         csv_path = os.environ.get("CONVERTCORD_AIRPORT_CODES_CSV", "").strip()
         if not csv_path:
+            csv_path = str(self.DEFAULT_AIRPORT_CODES_CSV)
+        if not os.path.exists(csv_path):
             return None
         airports = _load_airport_code_index(csv_path)
         entry = airports.get(code)

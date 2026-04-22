@@ -13,5 +13,6 @@ COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY convertcord /app/convertcord
+COPY data /app/data
 
 CMD ["python", "-m", "convertcord.bot"]
