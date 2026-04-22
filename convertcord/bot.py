@@ -183,7 +183,11 @@ class _ConvertClient(discord.Client):
             )
             return
 
-        await message.reply(response.content, mention_author=False)
+        await message.reply(
+            response.content or None,
+            mention_author=False,
+            embed=response.embed,
+        )
         for extra_message in response.extra_messages:
             await message.channel.send(extra_message)
 
@@ -283,7 +287,7 @@ class _ConvertClient(discord.Client):
             if response is None:
                 await interaction.response.send_message("Sorry, I couldn't process that command.", ephemeral=True)
                 return
-            await interaction.response.send_message(response.content)
+            await interaction.response.send_message(response.content or None, embed=response.embed)
             for extra in response.extra_messages:
                 await interaction.channel.send(extra)
         except Exception as exc:

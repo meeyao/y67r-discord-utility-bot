@@ -1,17 +1,63 @@
 from __future__ import annotations
 
+import csv
 import os
 import re
 import shlex
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 import random
 from difflib import SequenceMatcher
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Set, Tuple
 
-from aiohttp import ClientSession
+try:
+    import discord
+except ModuleNotFoundError:  # pragma: no cover - test-only fallback when discord.py is unavailable
+    class _FallbackColour(int):
+        @classmethod
+        def orange(cls) -> "_FallbackColour":
+            return cls(0xE67E22)
+
+        @classmethod
+        def blue(cls) -> "_FallbackColour":
+            return cls(0x3498DB)
+
+        @classmethod
+        def light_grey(cls) -> "_FallbackColour":
+            return cls(0x95A5A6)
+
+        @classmethod
+        def gold(cls) -> "_FallbackColour":
+            return cls(0xF1C40F)
+
+        @classmethod
+        def dark_blue(cls) -> "_FallbackColour":
+            return cls(0x2C3E50)
+
+    class _FallbackEmbed:
+        def __init__(self, *, title: str, description: str, color: _FallbackColour) -> None:
+            self.title = title
+            self.description = description
+            self.color = color
+            self.fields: List[Dict[str, object]] = []
+
+        def add_field(self, *, name: str, value: str, inline: bool = True) -> None:
+            self.fields.append({"name": name, "value": value, "inline": inline})
+
+    class _FallbackDiscordModule:
+        Colour = _FallbackColour
+        Embed = _FallbackEmbed
+
+    discord = _FallbackDiscordModule()
+
+try:
+    from aiohttp import ClientSession
+except ModuleNotFoundError:  # pragma: no cover - test-only fallback when aiohttp is unavailable
+    class ClientSession:  # type: ignore[no-redef]
+        pass
 
 from .conversions import (
     CATEGORY_LABELS,
@@ -22,8 +68,10 @@ from .conversions import (
     UnitValue,
     format_value,
 )
-from .currency import CurrencyConverter
 from .temps import read_system_temps
+
+if TYPE_CHECKING:
+    from .currency import CurrencyConverter
 
 
 @dataclass
@@ -31,44 +79,14 @@ class ServiceResponse:
     content: str
     error: bool = False
     extra_messages: Sequence[str] = ()
+    embed: Optional[discord.Embed] = None
 
 
 class ConvertService:
     CONNECTORS = {"to", "in", "into", "as", "=>", "->"}
     INLINE_RE = re.compile(r"^([-+]?\d+[\d,\.]*)([a-z°]+)$", re.IGNORECASE)
-    DEFAULT_TIME_LOCATION = "los angeles"
-    OVERRIDE_LOCATIONS: Dict[str, Dict[str, object]] = {
-        "new south wales": {
-            "display": "New South Wales, Australia",
-            "tz": "Australia/Sydney",
-            "lat": -33.8688,
-            "lon": 151.2093,
-        },
-        "new south wales australia": {
-            "display": "New South Wales, Australia",
-            "tz": "Australia/Sydney",
-            "lat": -33.8688,
-            "lon": 151.2093,
-        },
-        "new south wales au": {
-            "display": "New South Wales, Australia",
-            "tz": "Australia/Sydney",
-            "lat": -33.8688,
-            "lon": 151.2093,
-        },
-        "nsw": {
-            "display": "New South Wales, Australia",
-            "tz": "Australia/Sydney",
-            "lat": -33.8688,
-            "lon": 151.2093,
-        },
-    }
-    DEFAULT_LOCATION: Dict[str, object] = {
-        "display": "Los Angeles, CA",
-        "tz": "America/Los_Angeles",
-        "lat": 34.05,
-        "lon": -118.25,
-    }
+    WEATHER_HOUR_RE = re.compile(r"^(\d{1,2})h$", re.IGNORECASE)
+    WEATHER_DAY_RE = re.compile(r"^(\d{1,2})d$", re.IGNORECASE)
 
     def __init__(
         self,
@@ -262,6 +280,11 @@ class ConvertService:
             f"\n- {base} %"
             f"\n- {base} roll"
             f"\n- {base} weather austin"
+            f"\n- {base} weather new york today"
+            f"\n- {base} weather new york 6h"
+            f"\n- {base} weather washington dc 3 days"
+            f"\n- {base} weather new york 2d"
+            f"\n- {base} weather new york week"
             f"\n- {base} time london"
             f"\n- {base} temps"
             "\n- !urban <word>"
@@ -328,7 +351,7 @@ class ConvertService:
         return ServiceResponse("\n".join(lines))
 
     async def _handle_weather(self, args: Sequence[str]) -> ServiceResponse:
-        query = " ".join(args).strip()
+        query, weather_view = self._parse_weather_request(args)
         location = await self._resolve_location(query)
         if not location:
             return ServiceResponse(
@@ -338,7 +361,43 @@ class ConvertService:
         params = {
             "latitude": location["lat"],
             "longitude": location["lon"],
-            "current_weather": "true",
+            "current": ",".join(
+                [
+                    "temperature_2m",
+                    "apparent_temperature",
+                    "relative_humidity_2m",
+                    "dew_point_2m",
+                    "pressure_msl",
+                    "weather_code",
+                    "cloud_cover",
+                    "wind_speed_10m",
+                    "wind_direction_10m",
+                    "wind_gusts_10m",
+                    "precipitation",
+                    "precipitation_probability",
+                    "visibility",
+                    "is_day",
+                ]
+            ),
+            "daily": ",".join(
+                [
+                    "time",
+                    "weather_code",
+                    "temperature_2m_max",
+                    "temperature_2m_min",
+                    "precipitation_probability_max",
+                ]
+            ),
+            "hourly": ",".join(
+                [
+                    "temperature_2m",
+                    "apparent_temperature",
+                    "precipitation_probability",
+                    "weather_code",
+                    "wind_speed_10m",
+                ]
+            ),
+            "forecast_days": 7,
             "timezone": location.get("tz") or "auto",
         }
         try:
@@ -350,28 +409,31 @@ class ConvertService:
         except Exception as exc:
             raise ConversionError("Unable to fetch weather right now.") from exc
 
-        current = payload.get("current_weather") or {}
+        current = payload.get("current") or {}
         if not current:
             raise ConversionError("Weather data unavailable.")
-        temp_value = current.get("temperature")
+        temp_value = current.get("temperature_2m")
         if temp_value is None:
             raise ConversionError("Weather data unavailable.")
         temp_c = float(temp_value)
-        temp_f = (temp_c * 9.0 / 5.0) + 32.0
-        wind = current.get("windspeed")
         tz_name = location.get("tz") or payload.get("timezone")
         observed = self._format_iso_timestamp(current.get("time"), tz_name)
+        units = payload.get("current_units") or {}
+        daily = payload.get("daily") or {}
+        hourly = payload.get("hourly") or {}
 
-        lines = [
-            f"**Weather – {location['display']}**",
-            f"Temperature: {temp_c:.1f}°C ({temp_f:.1f}°F)",
-        ]
-        if wind is not None:
-            mph = wind * 0.621371
-            lines.append(f"Wind: {wind:.1f} km/h ({mph:.1f} mph)")
-        if observed:
-            lines.append(f"As of {observed}")
-        return ServiceResponse("\n".join(lines))
+        embed = self._build_weather_embed(
+            location_display=str(location["display"]),
+            current=current,
+            current_units=units,
+            daily=daily,
+            hourly=hourly,
+            observed=observed,
+            tz_name=tz_name,
+            weather_view=weather_view,
+        )
+        summary = f"Weather for {location['display']}: {temp_c:.1f}°C"
+        return ServiceResponse(summary, embed=embed)
 
     def _handle_smite(self) -> ServiceResponse:
         return ServiceResponse("yuvo", extra_messages=("play", "smite"))
@@ -522,12 +584,11 @@ class ConvertService:
     async def _resolve_location(self, query: Optional[str]) -> Optional[Dict[str, object]]:
         query = (query or "").strip()
         if not query:
-            return dict(self.DEFAULT_LOCATION)
+            return None
 
-        normalized = self._normalize_location_key(query)
-        override = self.OVERRIDE_LOCATIONS.get(normalized)
-        if override:
-            return dict(override)
+        airport = self._lookup_airport_code(query)
+        if airport:
+            return airport
 
         results = await self._geocode(query)
         if results:
@@ -548,10 +609,23 @@ class ConvertService:
 
         return None
 
-    @staticmethod
-    def _normalize_location_key(query: str) -> str:
-        parts = re.findall(r"[a-z0-9]+", query.lower())
-        return " ".join(parts)
+    def _lookup_airport_code(self, query: str) -> Optional[Dict[str, object]]:
+        code = re.sub(r"[^A-Za-z0-9]", "", query or "").upper()
+        if len(code) not in {3, 4}:
+            return None
+        csv_path = os.environ.get("CONVERTCORD_AIRPORT_CODES_CSV", "").strip()
+        if not csv_path:
+            return None
+        airports = _load_airport_code_index(csv_path)
+        entry = airports.get(code)
+        if not entry:
+            return None
+        return {
+            "display": str(entry["display"]),
+            "tz": None,
+            "lat": entry["lat"],
+            "lon": entry["lon"],
+        }
 
     async def _geocode(self, name: str) -> List[Dict[str, object]]:
         params = {
@@ -639,10 +713,10 @@ class ConvertService:
             display_parts.append(country)
         display = ", ".join([part for part in display_parts if part])
         tz = raw.get("timezone")
-        lat = raw.get("latitude", self.DEFAULT_LOCATION["lat"])
-        lon = raw.get("longitude", self.DEFAULT_LOCATION["lon"])
+        lat = float(raw["latitude"])
+        lon = float(raw["longitude"])
         return {
-            "display": display or self.DEFAULT_LOCATION["display"],
+            "display": display or str(raw.get("name") or raw.get("country") or "Unknown location"),
             "tz": tz,
             "lat": lat,
             "lon": lon,
@@ -682,6 +756,148 @@ class ConvertService:
             dt = dt.replace(tzinfo=ZoneInfo(tz_name))
         return f"<t:{int(dt.timestamp())}:f>"
 
+    def _build_weather_embed(
+        self,
+        *,
+        location_display: str,
+        current: Dict[str, object],
+        current_units: Dict[str, object],
+        daily: Dict[str, object],
+        hourly: Dict[str, object],
+        observed: Optional[str],
+        tz_name: Optional[str],
+        weather_view: str,
+    ) -> discord.Embed:
+        weather_code = _to_int(current.get("weather_code"))
+        is_day = bool(_to_int(current.get("is_day"), default=1))
+        condition = _describe_weather_code(weather_code, is_day)
+        temp_c = _to_float(current.get("temperature_2m"), default=0.0)
+        temp_f = _c_to_f(temp_c)
+        feels_c = _to_float(current.get("apparent_temperature"))
+        humidity = _to_int(current.get("relative_humidity_2m"))
+        dew_point_c = _to_float(current.get("dew_point_2m"))
+        pressure_hpa = _to_float(current.get("pressure_msl"))
+        wind_kmh = _to_float(current.get("wind_speed_10m"))
+        wind_direction = _to_int(current.get("wind_direction_10m"))
+        gust_kmh = _to_float(current.get("wind_gusts_10m"))
+        precip_mm = _to_float(current.get("precipitation"))
+        precip_probability = _to_int(current.get("precipitation_probability"))
+        cloud_cover = _to_int(current.get("cloud_cover"))
+        visibility_m = _to_int(current.get("visibility"))
+
+        temperature_unit = str(current_units.get("temperature_2m") or "°C")
+        wind_unit = str(current_units.get("wind_speed_10m") or "km/h")
+        precip_unit = str(current_units.get("precipitation") or "mm")
+
+        embed = discord.Embed(
+            title=f"Weather - {location_display}",
+            description=condition,
+            color=_weather_color(weather_code, is_day),
+        )
+        now_lines = [f"**{temp_c:.1f}{temperature_unit}** ({temp_f:.1f}°F)"]
+        if feels_c is not None:
+            now_lines.append(f"Feels like {_format_temp_pair(feels_c)}")
+        if observed:
+            now_lines.append(f"Updated {observed}")
+        embed.add_field(name="Now", value="\n".join(now_lines), inline=True)
+
+        details: List[str] = []
+        if humidity is not None:
+            details.append(f"Humidity: {humidity}%")
+        if dew_point_c is not None:
+            details.append(f"Dew point: {_format_temp_pair(dew_point_c)}")
+        if pressure_hpa is not None:
+            details.append(f"Pressure: {pressure_hpa:.0f} hPa")
+        if cloud_cover is not None:
+            details.append(f"Cloud cover: {cloud_cover}%")
+        if visibility_m is not None:
+            details.append(f"Visibility: {_format_visibility(visibility_m)}")
+        if precip_probability is not None or precip_mm is not None:
+            precip_parts = []
+            if precip_probability is not None:
+                precip_parts.append(f"{precip_probability}%")
+            if precip_mm is not None and precip_mm > 0:
+                precip_parts.append(f"{precip_mm:.1f} {precip_unit}")
+            if precip_parts:
+                details.append(f"Precipitation: {' • '.join(precip_parts)}")
+        embed.add_field(name="Conditions", value="\n".join(details) or "N/A", inline=True)
+
+        wind_lines: List[str] = []
+        if wind_kmh is not None:
+            direction = f" {_degrees_to_compass(wind_direction)}" if wind_direction is not None else ""
+            wind_lines.append(
+                f"Wind:{direction} {wind_kmh:.1f} {wind_unit} ({_kmh_to_mph(wind_kmh):.1f} mph)"
+            )
+        if gust_kmh is not None and gust_kmh > 0:
+            wind_lines.append(f"Gusts: {gust_kmh:.1f} {wind_unit} ({_kmh_to_mph(gust_kmh):.1f} mph)")
+        embed.add_field(name="Wind", value="\n".join(wind_lines) or "N/A", inline=True)
+
+        hourly_forecast = _format_hourly_weather(hourly, tz_name, weather_view)
+        if hourly_forecast:
+            title = {
+                "today": "Today",
+                "tomorrow": "Tomorrow",
+                "2d": "Day After Tomorrow",
+                "week": "This Week",
+            }.get(weather_view, f"In {weather_view}")
+            embed.add_field(name=title, value=hourly_forecast, inline=False)
+        else:
+            forecast = _format_daily_forecast(daily, tz_name)
+            if forecast:
+                embed.add_field(name="3-Day Forecast", value=forecast, inline=False)
+
+        return embed
+
+    def _parse_weather_request(self, args: Sequence[str]) -> Tuple[str, str]:
+        if not args:
+            return "", "current"
+        tokens = [token.strip() for token in args if token and token.strip()]
+        if not tokens:
+            return "", "current"
+        if len(tokens) >= 2:
+            natural = self._parse_weather_time_suffix(tokens)
+            if natural is not None:
+                location_tokens, view = natural
+                location = " ".join(location_tokens).strip()
+                return location, view
+        last = tokens[-1].lower()
+        if last in {"today", "tomorrow"}:
+            location = " ".join(tokens[:-1]).strip()
+            return location, last
+        if last == "week":
+            location = " ".join(tokens[:-1]).strip()
+            return location, last
+        match = self.WEATHER_HOUR_RE.match(last)
+        if match:
+            hours = int(match.group(1))
+            if hours in {3, 6, 12, 24, 36}:
+                location = " ".join(tokens[:-1]).strip()
+                return location, f"{hours}h"
+        day_match = self.WEATHER_DAY_RE.match(last)
+        if day_match:
+            days = int(day_match.group(1))
+            if days == 2:
+                location = " ".join(tokens[:-1]).strip()
+                return location, f"{days}d"
+        return " ".join(tokens).strip(), "current"
+
+    def _parse_weather_time_suffix(self, tokens: Sequence[str]) -> Optional[Tuple[Sequence[str], str]]:
+        count_token = tokens[-2].lower()
+        unit_token = tokens[-1].lower()
+        try:
+            count = int(count_token)
+        except ValueError:
+            return None
+
+        if unit_token in {"hour", "hours"} and count in {3, 6, 12, 24, 36}:
+            return tokens[:-2], f"{count}h"
+        if unit_token in {"day", "days"}:
+            if count == 2:
+                return tokens[:-2], "2d"
+            if count == 3:
+                return tokens[:-2], "week"
+        return None
+
 __all__ = ["ConvertService", "ServiceResponse"]
 
 
@@ -709,3 +925,405 @@ def _classify_netdata_chart(chart_id: str, context: str, family: str) -> Optiona
     if "cpu" in context or "cpu" in family:
         return "cpu"
     return None
+
+
+def _c_to_f(value_c: float) -> float:
+    return (value_c * 9.0 / 5.0) + 32.0
+
+
+def _kmh_to_mph(value_kmh: float) -> float:
+    return value_kmh * 0.621371
+
+
+def _to_float(value: object, default: Optional[float] = None) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_int(value: object, default: Optional[int] = None) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_temp_pair(value_c: float) -> str:
+    return f"{value_c:.1f}°C ({_c_to_f(value_c):.1f}°F)"
+
+
+def _format_visibility(value_m: int) -> str:
+    km = value_m / 1000.0
+    miles = km * 0.621371
+    if km >= 10:
+        return f"{km:.0f} km ({miles:.1f} mi)"
+    return f"{km:.1f} km ({miles:.1f} mi)"
+
+
+def _degrees_to_compass(degrees: Optional[int]) -> str:
+    if degrees is None:
+        return ""
+    directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    index = int((degrees % 360) / 45.0 + 0.5) % 8
+    return directions[index]
+
+
+def _weather_color(weather_code: Optional[int], is_day: bool) -> discord.Colour:
+    if weather_code in {95, 96, 99}:
+        return discord.Colour.orange()
+    if weather_code in {61, 63, 65, 66, 67, 80, 81, 82}:
+        return discord.Colour.blue()
+    if weather_code in {71, 73, 75, 77, 85, 86}:
+        return discord.Colour.light_grey()
+    return discord.Colour.gold() if is_day else discord.Colour.dark_blue()
+
+
+def _describe_weather_code(code: Optional[int], is_day: bool) -> str:
+    if code == 0:
+        return "Clear sky" if is_day else "Clear night"
+    if code in {1, 2, 3}:
+        return {
+            1: "Mostly clear" if is_day else "Mostly clear night",
+            2: "Partly cloudy",
+            3: "Overcast",
+        }[code]
+    if code in {45, 48}:
+        return "Foggy"
+    if code in {51, 53, 55}:
+        return "Drizzle"
+    if code in {56, 57}:
+        return "Freezing drizzle"
+    if code in {61, 63, 65}:
+        return "Rain"
+    if code in {66, 67}:
+        return "Freezing rain"
+    if code in {71, 73, 75, 77}:
+        return "Snow"
+    if code in {80, 81, 82}:
+        return "Rain showers"
+    if code in {85, 86}:
+        return "Snow showers"
+    if code in {95, 96, 99}:
+        return "Thunderstorm"
+    return "Current conditions"
+
+
+def _format_daily_forecast(daily: Dict[str, object], tz_name: Optional[str]) -> Optional[str]:
+    times = daily.get("time") or []
+    codes = daily.get("weather_code") or []
+    max_temps = daily.get("temperature_2m_max") or []
+    min_temps = daily.get("temperature_2m_min") or []
+    precip_probs = daily.get("precipitation_probability_max") or []
+
+    if not isinstance(times, list) or not times:
+        return None
+
+    lines: List[str] = []
+    for idx, raw_time in enumerate(times[:3]):
+        if not isinstance(raw_time, str):
+            continue
+        label = _format_forecast_day(raw_time, tz_name, idx)
+        code = _to_int(codes[idx]) if idx < len(codes) else None
+        max_temp = _to_float(max_temps[idx]) if idx < len(max_temps) else None
+        min_temp = _to_float(min_temps[idx]) if idx < len(min_temps) else None
+        precip = _to_int(precip_probs[idx]) if idx < len(precip_probs) else None
+
+        summary = _describe_weather_code(code, True)
+        temps = []
+        if max_temp is not None:
+            temps.append(f"H {_format_temp_pair(max_temp)}")
+        if min_temp is not None:
+            temps.append(f"L {_format_temp_pair(min_temp)}")
+        suffix = f" • Rain {precip}%" if precip is not None else ""
+        line = f"**{label}**: {summary}"
+        if temps:
+            line += f" • {' • '.join(temps)}"
+        line += suffix
+        lines.append(line)
+
+    return "\n".join(lines) if lines else None
+
+
+def _format_forecast_day(value: str, tz_name: Optional[str], index: int) -> str:
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return f"Day {index + 1}"
+    if dt.tzinfo is None and tz_name:
+        dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+    return "Today" if index == 0 else dt.strftime("%a")
+
+
+def _format_hourly_weather(
+    hourly: Dict[str, object], tz_name: Optional[str], weather_view: str
+) -> Optional[str]:
+    if weather_view == "current":
+        return None
+
+    times = hourly.get("time") or []
+    temps = hourly.get("temperature_2m") or []
+    feels = hourly.get("apparent_temperature") or []
+    precips = hourly.get("precipitation_probability") or []
+    codes = hourly.get("weather_code") or []
+    winds = hourly.get("wind_speed_10m") or []
+    if not isinstance(times, list) or not times:
+        return None
+
+    entries = []
+    for idx, raw_time in enumerate(times):
+        if not isinstance(raw_time, str):
+            continue
+        dt = _parse_weather_dt(raw_time, tz_name)
+        if not dt:
+            continue
+        entries.append(
+            {
+                "dt": dt,
+                "temp": _to_float(temps[idx]) if idx < len(temps) else None,
+                "feels": _to_float(feels[idx]) if idx < len(feels) else None,
+                "precip": _to_int(precips[idx]) if idx < len(precips) else None,
+                "code": _to_int(codes[idx]) if idx < len(codes) else None,
+                "wind": _to_float(winds[idx]) if idx < len(winds) else None,
+            }
+        )
+    if not entries:
+        return None
+
+    if weather_view in {"3h", "6h", "12h", "24h", "36h"}:
+        return _format_point_forecast(entries, weather_view)
+    if weather_view == "today":
+        return _format_day_window(entries, target="today")
+    if weather_view == "tomorrow":
+        return _format_day_window(entries, target="tomorrow")
+    if weather_view == "2d":
+        return _format_day_window(entries, target="2d")
+    if weather_view == "week":
+        return _format_weekly_outlook(entries)
+    return None
+
+
+def _parse_weather_dt(value: str, tz_name: Optional[str]) -> Optional[datetime]:
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if dt.tzinfo is None and tz_name:
+        dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+    return dt
+
+
+def _format_point_forecast(entries: Sequence[Dict[str, object]], label: str) -> Optional[str]:
+    hours = int(label[:-1])
+    now = datetime.now(entries[0]["dt"].tzinfo) if entries and isinstance(entries[0]["dt"], datetime) else datetime.now()
+    target = now + timedelta(hours=hours)
+    candidate = min(
+        entries,
+        key=lambda entry: abs((entry["dt"] - target).total_seconds()),  # type: ignore[operator]
+    )
+    dt = candidate["dt"]
+    temp = candidate["temp"]
+    feels = candidate["feels"]
+    precip = candidate["precip"]
+    wind = candidate["wind"]
+    code = candidate["code"]
+    if not isinstance(dt, datetime) or temp is None:
+        return None
+
+    lines = [
+        f"**{dt.strftime('%a %I %p').replace(' 0', ' ')}**",
+        f"{_describe_weather_code(code, True)}",
+        f"Temperature: {_format_temp_pair(temp)}",
+    ]
+    if feels is not None:
+        lines.append(f"Feels like {_format_temp_pair(feels)}")
+    if precip is not None:
+        lines.append(f"Rain chance: {precip}%")
+    if wind is not None:
+        lines.append(f"Wind: {wind:.1f} km/h ({_kmh_to_mph(wind):.1f} mph)")
+    return "\n".join(lines)
+
+
+def _format_day_window(entries: Sequence[Dict[str, object]], target: str) -> Optional[str]:
+    if not entries:
+        return None
+    first_dt = entries[0]["dt"]
+    if not isinstance(first_dt, datetime):
+        return None
+    today = first_dt.date()
+    if target == "today":
+        target_date = today
+    elif target == "tomorrow":
+        target_date = today + timedelta(days=1)
+    else:
+        target_date = today + timedelta(days=2)
+    selected = [entry for entry in entries if isinstance(entry["dt"], datetime) and entry["dt"].date() == target_date]
+    if not selected:
+        return None
+
+    picks = []
+    seen_hours = set()
+    for entry in selected:
+        dt = entry["dt"]
+        assert isinstance(dt, datetime)
+        if target == "today" and dt < datetime.now(dt.tzinfo):
+            continue
+        if dt.hour in seen_hours:
+            continue
+        if dt.hour % 3 != 0:
+            continue
+        seen_hours.add(dt.hour)
+        picks.append(entry)
+        if len(picks) == 4:
+            break
+    if not picks:
+        picks = selected[:4]
+
+    lines = []
+    for entry in picks:
+        dt = entry["dt"]
+        temp = entry["temp"]
+        precip = entry["precip"]
+        code = entry["code"]
+        if not isinstance(dt, datetime) or temp is None:
+            continue
+        line = f"**{dt.strftime('%I %p').lstrip('0')}** {_describe_weather_code(code, True)} • {_format_temp_pair(temp)}"
+        if precip is not None:
+            line += f" • Rain {precip}%"
+        lines.append(line)
+
+    summary = _summarize_day(selected)
+    if summary:
+        lines.append("")
+        lines.append(summary)
+    return "\n".join(lines) if lines else None
+
+
+def _summarize_day(entries: Sequence[Dict[str, object]]) -> Optional[str]:
+    temps = [entry["temp"] for entry in entries if isinstance(entry.get("temp"), float)]
+    precips = [entry["precip"] for entry in entries if isinstance(entry.get("precip"), int)]
+    winds = [entry["wind"] for entry in entries if isinstance(entry.get("wind"), float)]
+    if not temps:
+        return None
+    trend = "Warmer later" if temps[-1] > temps[0] + 1 else "Cooling later" if temps[0] > temps[-1] + 1 else "Steady temps"
+    rain = f"Rain peak {max(precips)}%" if precips else None
+    wind = f"Wind up to {max(winds):.0f} km/h" if winds else None
+    parts = [part for part in [trend, rain, wind] if part]
+    return " • ".join(parts) if parts else None
+
+
+def _format_weekly_outlook(entries: Sequence[Dict[str, object]]) -> Optional[str]:
+    if not entries:
+        return None
+
+    daily_groups: Dict[object, List[Dict[str, object]]] = {}
+    for entry in entries:
+        dt = entry.get("dt")
+        if not isinstance(dt, datetime):
+            continue
+        daily_groups.setdefault(dt.date(), []).append(entry)
+
+    if not daily_groups:
+        return None
+
+    lines: List[str] = []
+    for idx, day in enumerate(sorted(daily_groups.keys())[:7]):
+        day_entries = daily_groups[day]
+        temps = [value for value in (entry.get("temp") for entry in day_entries) if isinstance(value, float)]
+        precips = [value for value in (entry.get("precip") for entry in day_entries) if isinstance(value, int)]
+        noon_entry = min(
+            day_entries,
+            key=lambda entry: abs(entry["dt"].hour - 12),
+        )
+        code = _to_int(noon_entry.get("code"))
+        if not temps:
+            continue
+        label = "Today" if idx == 0 else noon_entry["dt"].strftime("%a")
+        line = (
+            f"**{label}**: {_describe_weather_code(code, True)}"
+            f" • H {_format_temp_pair(max(temps))}"
+            f" • L {_format_temp_pair(min(temps))}"
+        )
+        if precips:
+            line += f" • Rain {max(precips)}%"
+        lines.append(line)
+
+    return "\n".join(lines) if lines else None
+
+
+@lru_cache(maxsize=4)
+def _load_airport_code_index(path: str) -> Dict[str, Dict[str, object]]:
+    index: Dict[str, Dict[str, object]] = {}
+    if not path or not os.path.exists(path):
+        return index
+    try:
+        with open(path, newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                candidate = _build_airport_candidate(row)
+                if not candidate:
+                    continue
+                for code_field in ("iata_code", "icao_code"):
+                    code = str(row.get(code_field) or "").strip().upper()
+                    if not code:
+                        continue
+                    current = index.get(code)
+                    if current is None or candidate["rank"] > current["rank"]:
+                        index[code] = dict(candidate)
+    except OSError:
+        return {}
+    return index
+
+
+def _build_airport_candidate(row: Dict[str, object]) -> Optional[Dict[str, object]]:
+    coordinates = _parse_airport_coordinates(str(row.get("coordinates") or ""))
+    if coordinates is None:
+        return None
+    municipality = str(row.get("municipality") or "").strip()
+    iso_country = str(row.get("iso_country") or "").strip()
+    iata_code = str(row.get("iata_code") or "").strip().upper()
+    icao_code = str(row.get("icao_code") or "").strip().upper()
+    name = str(row.get("name") or municipality or iata_code or icao_code).strip()
+    if not name:
+        return None
+    code_label = iata_code or icao_code
+    display_parts = []
+    if municipality:
+        display_parts.append(municipality)
+    elif name:
+        display_parts.append(name)
+    if code_label:
+        display_parts[-1] = f"{display_parts[-1]} ({code_label})"
+    if iso_country:
+        display_parts.append(iso_country)
+    display = ", ".join(display_parts) if display_parts else name
+    return {
+        "display": display,
+        "lat": coordinates[0],
+        "lon": coordinates[1],
+        "rank": _airport_type_rank(str(row.get("type") or "")),
+    }
+
+
+def _parse_airport_coordinates(value: str) -> Optional[Tuple[float, float]]:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        return None
+    try:
+        lat = float(parts[0])
+        lon = float(parts[1])
+    except ValueError:
+        return None
+    return lat, lon
+
+
+def _airport_type_rank(value: str) -> int:
+    rankings = {
+        "large_airport": 5,
+        "medium_airport": 4,
+        "small_airport": 3,
+        "heliport": 2,
+        "seaplane_base": 1,
+        "balloonport": 1,
+    }
+    return rankings.get(value.strip().lower(), 0)
