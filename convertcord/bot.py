@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import os
 import re
@@ -183,10 +184,12 @@ class _ConvertClient(discord.Client):
             )
             return
 
+        embed = None if response.attachments else response.embed
         await message.reply(
             response.content or None,
             mention_author=False,
-            embed=response.embed,
+            embed=embed,
+            files=[discord.File(io.BytesIO(data), filename=name) for name, data in response.attachments],
         )
         for extra_message in response.extra_messages:
             await message.channel.send(extra_message)
@@ -287,7 +290,12 @@ class _ConvertClient(discord.Client):
             if response is None:
                 await interaction.response.send_message("Sorry, I couldn't process that command.", ephemeral=True)
                 return
-            await interaction.response.send_message(response.content or None, embed=response.embed)
+            embed = None if response.attachments else response.embed
+            await interaction.response.send_message(
+                response.content or None,
+                embed=embed,
+                files=[discord.File(io.BytesIO(data), filename=name) for name, data in response.attachments],
+            )
             for extra in response.extra_messages:
                 await interaction.channel.send(extra)
         except Exception as exc:

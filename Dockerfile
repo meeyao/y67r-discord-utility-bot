@@ -7,7 +7,10 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Create data directory for reminders persistence
-RUN mkdir -p /app/data
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends fonts-dejavu-core libcairo2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/data
 
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt

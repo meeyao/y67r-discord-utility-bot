@@ -70,6 +70,7 @@ from .conversions import (
     format_value,
 )
 from .temps import read_system_temps
+from .weather_card import render_weather_card
 
 if TYPE_CHECKING:
     from .currency import CurrencyConverter
@@ -81,6 +82,7 @@ class ServiceResponse:
     error: bool = False
     extra_messages: Sequence[str] = ()
     embed: Optional[discord.Embed] = None
+    attachments: Sequence[Tuple[str, bytes]] = ()
 
 
 @dataclass
@@ -396,6 +398,8 @@ class ConvertService:
                     "temperature_2m_max",
                     "temperature_2m_min",
                     "precipitation_probability_max",
+                    "sunrise",
+                    "sunset",
                 ]
             ),
             "hourly": ",".join(
@@ -444,7 +448,17 @@ class ConvertService:
             tz_name=tz_name,
             weather_view=weather_view,
         )
-        return ServiceResponse("", embed=embed)
+        attachment = self._build_weather_attachment(
+            location_display=str(location["display"]),
+            current=current,
+            hourly=hourly,
+            daily=daily,
+            air_quality=air_quality,
+            observed=observed,
+            tz_name=tz_name,
+        )
+        attachments = (attachment,) if attachment else ()
+        return ServiceResponse("", embed=embed, attachments=attachments)
 
     def _handle_smite(self) -> ServiceResponse:
         return ServiceResponse("yuvo", extra_messages=("play", "smite"))
@@ -881,6 +895,49 @@ class ConvertService:
 
         return embed
 
+    def _build_weather_attachment(
+        self,
+        *,
+        location_display: str,
+        current: Dict[str, object],
+        hourly: Dict[str, object],
+        daily: Dict[str, object],
+        air_quality: AirQualitySnapshot,
+        observed: Optional[str],
+        tz_name: Optional[str],
+    ) -> Optional[Tuple[str, bytes]]:
+        weather_code = _to_int(current.get("weather_code"))
+        is_day = bool(_to_int(current.get("is_day"), default=1))
+        condition = _describe_weather_code(weather_code, is_day)
+        image_bytes = render_weather_card(
+            location_display=location_display,
+            condition=condition,
+            condition_icon=_weather_icon_name(weather_code, is_day),
+            temperature_c=_to_float(current.get("temperature_2m"), default=0.0) or 0.0,
+            feels_c=_to_float(current.get("apparent_temperature")),
+            humidity=_to_int(current.get("relative_humidity_2m")),
+            dew_point_c=_to_float(current.get("dew_point_2m")),
+            wind_kmh=_to_float(current.get("wind_speed_10m")),
+            gust_kmh=_to_float(current.get("wind_gusts_10m")),
+            wind_direction=_degrees_to_compass(_to_int(current.get("wind_direction_10m"))),
+            pressure_hpa=_to_float(current.get("pressure_msl")),
+            precip_probability=_to_int(current.get("precipitation_probability")),
+            cloud_cover=_to_int(current.get("cloud_cover")),
+            visibility_text=_format_visibility(_to_int(current.get("visibility"))) if _to_int(current.get("visibility")) is not None else None,
+            sunrise=_extract_time_label(daily.get("sunrise"), 0, tz_name),
+            sunset=_extract_time_label(daily.get("sunset"), 0, tz_name),
+            uv_text=_format_uv_index(air_quality.current_uv) if air_quality.current_uv is not None else None,
+            aqi_text=_format_aqi(air_quality.current_us_aqi) if air_quality.current_us_aqi is not None else None,
+            observed_text=_format_observed_card_label(current.get("time"), tz_name),
+            hourly_cards=_build_hourly_cards(hourly, tz_name),
+            daily_cards=_build_daily_cards(daily, tz_name),
+            forecast_rows=_build_forecast_rows(daily, tz_name),
+            accent_rgb=_weather_accent(weather_code, is_day),
+        )
+        if not image_bytes:
+            return None
+        return ("weather-card.png", image_bytes)
+
     async def _fetch_air_quality(
         self, lat: float, lon: float, tz_name: Optional[str]
     ) -> AirQualitySnapshot:
@@ -1079,6 +1136,16 @@ def _weather_color(weather_code: Optional[int], is_day: bool) -> discord.Colour:
     return discord.Colour.gold() if is_day else discord.Colour.dark_blue()
 
 
+def _weather_accent(weather_code: Optional[int], is_day: bool) -> tuple[int, int, int]:
+    if weather_code in {95, 96, 99}:
+        return (227, 126, 34)
+    if weather_code in {61, 63, 65, 66, 67, 80, 81, 82}:
+        return (112, 180, 232)
+    if weather_code in {71, 73, 75, 77, 85, 86}:
+        return (191, 207, 222)
+    return (197, 214, 99) if is_day else (189, 210, 109)
+
+
 def _weather_emoji(code: Optional[int], is_day: bool) -> str:
     if code == 0:
         return "☀️" if is_day else "🌙"
@@ -1093,6 +1160,32 @@ def _weather_emoji(code: Optional[int], is_day: bool) -> str:
     if code in {95, 96, 99}:
         return "⛈️"
     return "🌡️"
+
+
+def _weather_icon_name(code: Optional[int], is_day: bool) -> str:
+    if code == 0:
+        return "clear_day" if is_day else "clear_night"
+    if code == 1:
+        return "mostly_clear_day" if is_day else "mostly_clear_night"
+    if code == 2:
+        return "partly_cloudy_day" if is_day else "partly_cloudy_night"
+    if code == 3:
+        return "cloudy"
+    if code in {45, 48}:
+        return "haze_fog_dust_smoke"
+    if code in {51, 53, 55, 56, 57}:
+        return "drizzle"
+    if code in {61, 63, 66, 67, 80, 81}:
+        return "showers_rain"
+    if code in {65, 82}:
+        return "heavy_rain"
+    if code in {71, 73, 77, 85}:
+        return "flurries"
+    if code in {75, 86}:
+        return "heavy_snow"
+    if code in {95, 96, 99}:
+        return "strong_thunderstorms"
+    return "cloudy"
 
 
 def _describe_weather_code(code: Optional[int], is_day: bool) -> str:
@@ -1473,6 +1566,127 @@ def _format_weekly_air_quality(entries: Sequence[Dict[str, object]]) -> Optional
             parts.append(f"AQI {_format_aqi(max(aqis))}")
         lines.append(f"**{label}** • " + " • ".join(parts))
     return "\n".join(lines) if lines else None
+
+
+def _build_daily_cards(daily: Dict[str, object], tz_name: Optional[str]) -> Sequence[Dict[str, object]]:
+    times = daily.get("time") or []
+    codes = daily.get("weather_code") or []
+    max_temps = daily.get("temperature_2m_max") or []
+    min_temps = daily.get("temperature_2m_min") or []
+    cards: List[Dict[str, object]] = []
+    if not isinstance(times, list):
+        return cards
+    for idx, raw_time in enumerate(times[:7]):
+        if not isinstance(raw_time, str):
+            continue
+        code = _to_int(codes[idx]) if idx < len(codes) else None
+        max_temp = _to_float(max_temps[idx]) if idx < len(max_temps) else None
+        min_temp = _to_float(min_temps[idx]) if idx < len(min_temps) else None
+        cards.append(
+            {
+                "label": _format_forecast_day(raw_time, tz_name, idx),
+                "icon": _weather_icon_name(code, True),
+                "summary": _describe_weather_code(code, True),
+                "temps": _format_card_temps(max_temp, min_temp),
+            }
+        )
+    return cards
+
+
+def _build_hourly_cards(hourly: Dict[str, object], tz_name: Optional[str]) -> Sequence[Dict[str, object]]:
+    times = hourly.get("time") or []
+    temps = hourly.get("temperature_2m") or []
+    codes = hourly.get("weather_code") or []
+    cards: List[Dict[str, object]] = []
+    if not isinstance(times, list):
+        return cards
+
+    now = datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.now()
+    for idx, raw_time in enumerate(times):
+        if not isinstance(raw_time, str):
+            continue
+        dt = _parse_weather_dt(raw_time, tz_name)
+        if not dt or dt < now:
+            continue
+        temp = _to_float(temps[idx]) if idx < len(temps) else None
+        code = _to_int(codes[idx]) if idx < len(codes) else None
+        cards.append(
+            {
+                "label": _format_clock_label(dt),
+                "icon": _weather_icon_name(code, True),
+                "temp": f"{temp:.0f}°" if temp is not None else "--",
+            }
+        )
+        if len(cards) == 6:
+            break
+    return cards
+
+
+def _build_forecast_rows(daily: Dict[str, object], tz_name: Optional[str]) -> Sequence[str]:
+    times = daily.get("time") or []
+    codes = daily.get("weather_code") or []
+    max_temps = daily.get("temperature_2m_max") or []
+    min_temps = daily.get("temperature_2m_min") or []
+    precip_probs = daily.get("precipitation_probability_max") or []
+    rows: List[str] = []
+    if not isinstance(times, list):
+        return rows
+    for idx, raw_time in enumerate(times[:3]):
+        if not isinstance(raw_time, str):
+            continue
+        code = _to_int(codes[idx]) if idx < len(codes) else None
+        max_temp = _to_float(max_temps[idx]) if idx < len(max_temps) else None
+        min_temp = _to_float(min_temps[idx]) if idx < len(min_temps) else None
+        precip = _to_int(precip_probs[idx]) if idx < len(precip_probs) else None
+        label = _format_forecast_day(raw_time, tz_name, idx)
+        summary = _describe_weather_code(code, True)
+        hi = f"{max_temp:.0f}°C / {_c_to_f(max_temp):.0f}°F" if max_temp is not None else "N/A"
+        lo = f"{min_temp:.0f}°C / {_c_to_f(min_temp):.0f}°F" if min_temp is not None else "N/A"
+        rain = f"{precip}%" if precip is not None else "N/A"
+        rows.append(f"{label} • {summary} • High {hi} • Low {lo} • Rain {rain}")
+    return rows
+
+
+def _format_card_temps(max_temp: Optional[float], min_temp: Optional[float]) -> str:
+    if max_temp is None and min_temp is None:
+        return "--"
+    if max_temp is None:
+        return f"{min_temp:.0f}°"
+    if min_temp is None:
+        return f"{max_temp:.0f}°"
+    return f"{max_temp:.0f}°/{min_temp:.0f}°"
+
+
+def _extract_time_label(values: object, index: int, tz_name: Optional[str]) -> Optional[str]:
+    if not isinstance(values, list) or index >= len(values):
+        return None
+    value = values[index]
+    if not isinstance(value, str):
+        return None
+    dt = _parse_weather_dt(value, tz_name)
+    if not dt:
+        return None
+    return dt.strftime("%H:%M")
+
+
+def _format_observed_label(observed: Optional[str]) -> Optional[str]:
+    if not observed:
+        return None
+    return f"Updated {observed}"
+
+
+def _format_observed_card_label(value: object, tz_name: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    dt = _parse_weather_dt(value, tz_name)
+    if not dt:
+        return None
+    return f"Updated {dt.strftime('%b %d, %I:%M %p').replace(' 0', ' ')}"
+
+
+def _format_clock_label(dt: datetime) -> str:
+    label = dt.strftime("%I %p")
+    return label[1:] if label.startswith("0") else label
 
 
 @lru_cache(maxsize=4)
