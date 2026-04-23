@@ -8,7 +8,9 @@ from convertcord.service import (
     ConversionError,
     ConvertService,
     _describe_weather_code,
+    _format_aqi,
     _format_daily_forecast,
+    _format_uv_index,
     _load_airport_code_index,
     _weather_color,
 )
@@ -33,8 +35,10 @@ class WeatherFormattingTests(unittest.TestCase):
 
         self.assertIsNotNone(forecast)
         assert forecast is not None
-        self.assertIn("**Today**: Overcast", forecast)
-        self.assertIn("**Fri**: Rain", forecast)
+        self.assertIn("**Today**", forecast)
+        self.assertIn("Overcast", forecast)
+        self.assertIn("**Fri**", forecast)
+        self.assertIn("Rain", forecast)
         self.assertIn("Rain 80%", forecast)
 
     def test_weather_color_uses_expected_palette(self) -> None:
@@ -79,6 +83,24 @@ class WeatherFormattingTests(unittest.TestCase):
 
         self.assertTrue(response.error)
         self.assertEqual(response.content, "Unable to fetch weather right now.")
+
+    def test_parse_weather_request_supports_7d_day_offset(self) -> None:
+        weather_service = ConvertService(
+            alias="!weather",
+            measurement_converter=Mock(),
+            temperature_converter=Mock(),
+            currency_converter=Mock(),
+            http_session=Mock(),
+        )
+
+        location, view = weather_service._parse_weather_request(["MCN", "7d"])
+
+        self.assertEqual(location, "MCN")
+        self.assertEqual(view, "7d")
+
+    def test_uv_and_aqi_labels_are_human_readable(self) -> None:
+        self.assertEqual(_format_uv_index(7.2), "7 High")
+        self.assertEqual(_format_aqi(82), "82 Moderate")
 
 
 if __name__ == "__main__":

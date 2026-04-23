@@ -83,6 +83,13 @@ class ServiceResponse:
     embed: Optional[discord.Embed] = None
 
 
+@dataclass
+class AirQualitySnapshot:
+    current_uv: Optional[float] = None
+    current_us_aqi: Optional[int] = None
+    hourly: Optional[Dict[str, object]] = None
+
+
 class ConvertService:
     CONNECTORS = {"to", "in", "into", "as", "=>", "->"}
     INLINE_RE = re.compile(r"^([-+]?\d+[\d,\.]*)([a-z°]+)$", re.IGNORECASE)
@@ -285,7 +292,9 @@ class ConvertService:
             f"\n- {base} weather new york today"
             f"\n- {base} weather new york 6h"
             f"\n- {base} weather washington dc 3 days"
+            f"\n- {base} weather new york 1d"
             f"\n- {base} weather new york 2d"
+            f"\n- {base} weather new york 7d"
             f"\n- {base} weather new york week"
             f"\n- {base} time london"
             f"\n- {base} temps"
@@ -383,7 +392,6 @@ class ConvertService:
             ),
             "daily": ",".join(
                 [
-                    "time",
                     "weather_code",
                     "temperature_2m_max",
                     "temperature_2m_min",
@@ -423,6 +431,7 @@ class ConvertService:
         units = payload.get("current_units") or {}
         daily = payload.get("daily") or {}
         hourly = payload.get("hourly") or {}
+        air_quality = await self._fetch_air_quality(location["lat"], location["lon"], tz_name)
 
         embed = self._build_weather_embed(
             location_display=str(location["display"]),
@@ -430,12 +439,12 @@ class ConvertService:
             current_units=units,
             daily=daily,
             hourly=hourly,
+            air_quality=air_quality,
             observed=observed,
             tz_name=tz_name,
             weather_view=weather_view,
         )
-        summary = f"Weather for {location['display']}: {temp_c:.1f}°C"
-        return ServiceResponse(summary, embed=embed)
+        return ServiceResponse("", embed=embed)
 
     def _handle_smite(self) -> ServiceResponse:
         return ServiceResponse("yuvo", extra_messages=("play", "smite"))
@@ -768,6 +777,7 @@ class ConvertService:
         current_units: Dict[str, object],
         daily: Dict[str, object],
         hourly: Dict[str, object],
+        air_quality: AirQualitySnapshot,
         observed: Optional[str],
         tz_name: Optional[str],
         weather_view: str,
@@ -775,6 +785,7 @@ class ConvertService:
         weather_code = _to_int(current.get("weather_code"))
         is_day = bool(_to_int(current.get("is_day"), default=1))
         condition = _describe_weather_code(weather_code, is_day)
+        condition_emoji = _weather_emoji(weather_code, is_day)
         temp_c = _to_float(current.get("temperature_2m"), default=0.0)
         temp_f = _c_to_f(temp_c)
         feels_c = _to_float(current.get("apparent_temperature"))
@@ -788,34 +799,43 @@ class ConvertService:
         precip_probability = _to_int(current.get("precipitation_probability"))
         cloud_cover = _to_int(current.get("cloud_cover"))
         visibility_m = _to_int(current.get("visibility"))
+        uv_index_now = air_quality.current_uv
+        us_aqi_now = air_quality.current_us_aqi
 
         temperature_unit = str(current_units.get("temperature_2m") or "°C")
         wind_unit = str(current_units.get("wind_speed_10m") or "km/h")
         precip_unit = str(current_units.get("precipitation") or "mm")
 
         embed = discord.Embed(
-            title=f"Weather - {location_display}",
+            title=f"{condition_emoji} {location_display}",
             description=condition,
             color=_weather_color(weather_code, is_day),
         )
-        now_lines = [f"**{temp_c:.1f}{temperature_unit}** ({temp_f:.1f}°F)"]
+        now_lines = [f"**{temp_c:.0f}{temperature_unit}** / **{temp_f:.0f}°F**"]
         if feels_c is not None:
-            now_lines.append(f"Feels like {_format_temp_pair(feels_c)}")
+            now_lines.append(f"Feels {_format_temp_pair_compact(feels_c)}")
         if observed:
             now_lines.append(f"Updated {observed}")
         embed.add_field(name="Now", value="\n".join(now_lines), inline=True)
 
         details: List[str] = []
         if humidity is not None:
-            details.append(f"Humidity: {humidity}%")
+            details.append(f"Humidity {humidity}%")
         if dew_point_c is not None:
-            details.append(f"Dew point: {_format_temp_pair(dew_point_c)}")
+            details.append(f"Dew point {_format_temp_pair_compact(dew_point_c)}")
         if pressure_hpa is not None:
-            details.append(f"Pressure: {pressure_hpa:.0f} hPa")
+            details.append(f"Pressure {pressure_hpa:.0f} hPa")
+        if uv_index_now is not None:
+            details.append(f"UV {_format_uv_index(uv_index_now)}")
+        if us_aqi_now is not None:
+            details.append(f"AQI {_format_aqi(us_aqi_now)}")
+        embed.add_field(name="Air", value="\n".join(details) or "N/A", inline=True)
+
+        sky_lines: List[str] = []
         if cloud_cover is not None:
-            details.append(f"Cloud cover: {cloud_cover}%")
+            sky_lines.append(f"Clouds {cloud_cover}%")
         if visibility_m is not None:
-            details.append(f"Visibility: {_format_visibility(visibility_m)}")
+            sky_lines.append(f"Visibility {_format_visibility(visibility_m)}")
         if precip_probability is not None or precip_mm is not None:
             precip_parts = []
             if precip_probability is not None:
@@ -823,24 +843,33 @@ class ConvertService:
             if precip_mm is not None and precip_mm > 0:
                 precip_parts.append(f"{precip_mm:.1f} {precip_unit}")
             if precip_parts:
-                details.append(f"Precipitation: {' • '.join(precip_parts)}")
-        embed.add_field(name="Conditions", value="\n".join(details) or "N/A", inline=True)
+                sky_lines.append(f"Precip {' • '.join(precip_parts)}")
+        embed.add_field(name="Sky", value="\n".join(sky_lines) or "N/A", inline=True)
 
         wind_lines: List[str] = []
         if wind_kmh is not None:
-            direction = f" {_degrees_to_compass(wind_direction)}" if wind_direction is not None else ""
+            direction = _degrees_to_compass(wind_direction)
+            speed_text = f"{wind_kmh:.1f} {wind_unit} ({_kmh_to_mph(wind_kmh):.1f} mph)"
+            if direction:
+                speed_text = f"{direction} {speed_text}"
             wind_lines.append(
-                f"Wind:{direction} {wind_kmh:.1f} {wind_unit} ({_kmh_to_mph(wind_kmh):.1f} mph)"
+                speed_text
             )
         if gust_kmh is not None and gust_kmh > 0:
-            wind_lines.append(f"Gusts: {gust_kmh:.1f} {wind_unit} ({_kmh_to_mph(gust_kmh):.1f} mph)")
+            wind_lines.append(f"Gusts {gust_kmh:.1f} {wind_unit} ({_kmh_to_mph(gust_kmh):.1f} mph)")
         embed.add_field(name="Wind", value="\n".join(wind_lines) or "N/A", inline=True)
 
         hourly_forecast = _format_hourly_weather(hourly, tz_name, weather_view)
+        air_quality_forecast = _format_air_quality_view(air_quality.hourly, tz_name, weather_view)
+        if air_quality_forecast:
+            hourly_forecast = (
+                f"{hourly_forecast}\n\n{air_quality_forecast}" if hourly_forecast else air_quality_forecast
+            )
         if hourly_forecast:
             title = {
                 "today": "Today",
                 "tomorrow": "Tomorrow",
+                "1d": "Tomorrow",
                 "2d": "Day After Tomorrow",
                 "week": "This Week",
             }.get(weather_view, f"In {weather_view}")
@@ -848,9 +877,39 @@ class ConvertService:
         else:
             forecast = _format_daily_forecast(daily, tz_name)
             if forecast:
-                embed.add_field(name="3-Day Forecast", value=forecast, inline=False)
+                embed.add_field(name="Forecast", value=forecast, inline=False)
 
         return embed
+
+    async def _fetch_air_quality(
+        self, lat: float, lon: float, tz_name: Optional[str]
+    ) -> AirQualitySnapshot:
+        params = {
+            "latitude": lat,
+            "longitude": lon,
+            "current": "uv_index,us_aqi",
+            "hourly": "uv_index,us_aqi",
+            "forecast_days": 7,
+            "timezone": tz_name or "auto",
+        }
+        try:
+            async with self.http_session.get(
+                "https://air-quality-api.open-meteo.com/v1/air-quality",
+                params=params,
+                timeout=10,
+            ) as resp:
+                resp.raise_for_status()
+                payload = await resp.json()
+        except Exception:
+            return AirQualitySnapshot()
+
+        current = payload.get("current") or {}
+        hourly = payload.get("hourly") or {}
+        return AirQualitySnapshot(
+            current_uv=_to_float(current.get("uv_index")),
+            current_us_aqi=_to_int(current.get("us_aqi")),
+            hourly=hourly if isinstance(hourly, dict) else None,
+        )
 
     def _parse_weather_request(self, args: Sequence[str]) -> Tuple[str, str]:
         if not args:
@@ -880,7 +939,7 @@ class ConvertService:
         day_match = self.WEATHER_DAY_RE.match(last)
         if day_match:
             days = int(day_match.group(1))
-            if days == 2:
+            if 1 <= days <= 7:
                 location = " ".join(tokens[:-1]).strip()
                 return location, f"{days}d"
         return " ".join(tokens).strip(), "current"
@@ -896,10 +955,8 @@ class ConvertService:
         if unit_token in {"hour", "hours"} and count in {3, 6, 12, 24, 36}:
             return tokens[:-2], f"{count}h"
         if unit_token in {"day", "days"}:
-            if count == 2:
-                return tokens[:-2], "2d"
-            if count == 3:
-                return tokens[:-2], "week"
+            if 1 <= count <= 7:
+                return tokens[:-2], f"{count}d"
         return None
 
 __all__ = ["ConvertService", "ServiceResponse"]
@@ -957,6 +1014,10 @@ def _format_temp_pair(value_c: float) -> str:
     return f"{value_c:.1f}°C ({_c_to_f(value_c):.1f}°F)"
 
 
+def _format_temp_pair_compact(value_c: float) -> str:
+    return f"{value_c:.0f}°C / {_c_to_f(value_c):.0f}°F"
+
+
 def _format_visibility(value_m: int) -> str:
     km = value_m / 1000.0
     miles = km * 0.621371
@@ -973,6 +1034,41 @@ def _degrees_to_compass(degrees: Optional[int]) -> str:
     return directions[index]
 
 
+def _format_uv_index(value: float) -> str:
+    rounded = round(value)
+    return f"{rounded} {_uv_label(value)}"
+
+
+def _uv_label(value: float) -> str:
+    if value < 3:
+        return "Low"
+    if value < 6:
+        return "Moderate"
+    if value < 8:
+        return "High"
+    if value < 11:
+        return "Very High"
+    return "Extreme"
+
+
+def _format_aqi(value: int) -> str:
+    return f"{value} {_aqi_label(value)}"
+
+
+def _aqi_label(value: int) -> str:
+    if value <= 50:
+        return "Good"
+    if value <= 100:
+        return "Moderate"
+    if value <= 150:
+        return "USG"
+    if value <= 200:
+        return "Unhealthy"
+    if value <= 300:
+        return "Very Unhealthy"
+    return "Hazardous"
+
+
 def _weather_color(weather_code: Optional[int], is_day: bool) -> discord.Colour:
     if weather_code in {95, 96, 99}:
         return discord.Colour.orange()
@@ -981,6 +1077,22 @@ def _weather_color(weather_code: Optional[int], is_day: bool) -> discord.Colour:
     if weather_code in {71, 73, 75, 77, 85, 86}:
         return discord.Colour.light_grey()
     return discord.Colour.gold() if is_day else discord.Colour.dark_blue()
+
+
+def _weather_emoji(code: Optional[int], is_day: bool) -> str:
+    if code == 0:
+        return "☀️" if is_day else "🌙"
+    if code in {1, 2}:
+        return "🌤️" if is_day else "☁️"
+    if code in {3, 45, 48}:
+        return "☁️"
+    if code in {51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82}:
+        return "🌧️"
+    if code in {71, 73, 75, 77, 85, 86}:
+        return "🌨️"
+    if code in {95, 96, 99}:
+        return "⛈️"
+    return "🌡️"
 
 
 def _describe_weather_code(code: Optional[int], is_day: bool) -> str:
@@ -1034,16 +1146,20 @@ def _format_daily_forecast(daily: Dict[str, object], tz_name: Optional[str]) -> 
         precip = _to_int(precip_probs[idx]) if idx < len(precip_probs) else None
 
         summary = _describe_weather_code(code, True)
+        emoji = _weather_emoji(code, True)
         temps = []
         if max_temp is not None:
-            temps.append(f"H {_format_temp_pair(max_temp)}")
+            temps.append(f"{max_temp:.0f}°")
         if min_temp is not None:
-            temps.append(f"L {_format_temp_pair(min_temp)}")
-        suffix = f" • Rain {precip}%" if precip is not None else ""
-        line = f"**{label}**: {summary}"
+            temps.append(f"{min_temp:.0f}°")
+        line = f"**{label}** {emoji} {summary}"
         if temps:
-            line += f" • {' • '.join(temps)}"
-        line += suffix
+            if len(temps) == 2:
+                line += f" • {temps[0]}/{temps[1]}"
+            else:
+                line += f" • {temps[0]}"
+        if precip is not None:
+            line += f" • Rain {precip}%"
         lines.append(line)
 
     return "\n".join(lines) if lines else None
@@ -1097,13 +1213,57 @@ def _format_hourly_weather(
     if weather_view in {"3h", "6h", "12h", "24h", "36h"}:
         return _format_point_forecast(entries, weather_view)
     if weather_view == "today":
-        return _format_day_window(entries, target="today")
+        return _format_day_window(entries, day_offset=0, skip_past=True)
     if weather_view == "tomorrow":
-        return _format_day_window(entries, target="tomorrow")
-    if weather_view == "2d":
-        return _format_day_window(entries, target="2d")
+        return _format_day_window(entries, day_offset=1, skip_past=False)
+    day_match = re.match(r"^([1-7])d$", weather_view)
+    if day_match:
+        return _format_day_window(entries, day_offset=int(day_match.group(1)), skip_past=False)
     if weather_view == "week":
         return _format_weekly_outlook(entries)
+    return None
+
+
+def _format_air_quality_view(
+    hourly: Optional[Dict[str, object]], tz_name: Optional[str], weather_view: str
+) -> Optional[str]:
+    if not hourly:
+        return None
+    times = hourly.get("time") or []
+    uvs = hourly.get("uv_index") or []
+    aqis = hourly.get("us_aqi") or []
+    if not isinstance(times, list) or not times:
+        return None
+
+    entries = []
+    for idx, raw_time in enumerate(times):
+        if not isinstance(raw_time, str):
+            continue
+        dt = _parse_weather_dt(raw_time, tz_name)
+        if not dt:
+            continue
+        entries.append(
+            {
+                "dt": dt,
+                "uv": _to_float(uvs[idx]) if idx < len(uvs) else None,
+                "aqi": _to_int(aqis[idx]) if idx < len(aqis) else None,
+            }
+        )
+    if not entries:
+        return None
+
+    if weather_view == "week":
+        return _format_weekly_air_quality(entries)
+    if weather_view == "today":
+        return _format_daily_air_quality(entries, 0)
+    if weather_view == "tomorrow":
+        return _format_daily_air_quality(entries, 1)
+    day_match = re.match(r"^([1-7])d$", weather_view)
+    if day_match:
+        return _format_daily_air_quality(entries, int(day_match.group(1)))
+    point_match = re.match(r"^(\d{1,2})h$", weather_view)
+    if point_match:
+        return _format_point_air_quality(entries, int(point_match.group(1)))
     return None
 
 
@@ -1136,31 +1296,28 @@ def _format_point_forecast(entries: Sequence[Dict[str, object]], label: str) -> 
 
     lines = [
         f"**{dt.strftime('%a %I %p').replace(' 0', ' ')}**",
-        f"{_describe_weather_code(code, True)}",
-        f"Temperature: {_format_temp_pair(temp)}",
+        f"{_weather_emoji(code, True)} {_describe_weather_code(code, True)}",
+        f"Temp {_format_temp_pair_compact(temp)}",
     ]
     if feels is not None:
-        lines.append(f"Feels like {_format_temp_pair(feels)}")
+        lines.append(f"Feels {_format_temp_pair_compact(feels)}")
     if precip is not None:
-        lines.append(f"Rain chance: {precip}%")
+        lines.append(f"Rain {precip}%")
     if wind is not None:
-        lines.append(f"Wind: {wind:.1f} km/h ({_kmh_to_mph(wind):.1f} mph)")
+        lines.append(f"Wind {wind:.1f} km/h ({_kmh_to_mph(wind):.1f} mph)")
     return "\n".join(lines)
 
 
-def _format_day_window(entries: Sequence[Dict[str, object]], target: str) -> Optional[str]:
+def _format_day_window(
+    entries: Sequence[Dict[str, object]], *, day_offset: int, skip_past: bool
+) -> Optional[str]:
     if not entries:
         return None
     first_dt = entries[0]["dt"]
     if not isinstance(first_dt, datetime):
         return None
     today = first_dt.date()
-    if target == "today":
-        target_date = today
-    elif target == "tomorrow":
-        target_date = today + timedelta(days=1)
-    else:
-        target_date = today + timedelta(days=2)
+    target_date = today + timedelta(days=day_offset)
     selected = [entry for entry in entries if isinstance(entry["dt"], datetime) and entry["dt"].date() == target_date]
     if not selected:
         return None
@@ -1170,7 +1327,7 @@ def _format_day_window(entries: Sequence[Dict[str, object]], target: str) -> Opt
     for entry in selected:
         dt = entry["dt"]
         assert isinstance(dt, datetime)
-        if target == "today" and dt < datetime.now(dt.tzinfo):
+        if skip_past and dt < datetime.now(dt.tzinfo):
             continue
         if dt.hour in seen_hours:
             continue
@@ -1191,7 +1348,11 @@ def _format_day_window(entries: Sequence[Dict[str, object]], target: str) -> Opt
         code = entry["code"]
         if not isinstance(dt, datetime) or temp is None:
             continue
-        line = f"**{dt.strftime('%I %p').lstrip('0')}** {_describe_weather_code(code, True)} • {_format_temp_pair(temp)}"
+        line = (
+            f"**{dt.strftime('%I %p').lstrip('0')}** "
+            f"{_weather_emoji(code, True)} {_describe_weather_code(code, True)}"
+            f" • {_format_temp_pair_compact(temp)}"
+        )
         if precip is not None:
             line += f" • Rain {precip}%"
         lines.append(line)
@@ -1243,15 +1404,74 @@ def _format_weekly_outlook(entries: Sequence[Dict[str, object]]) -> Optional[str
         if not temps:
             continue
         label = "Today" if idx == 0 else noon_entry["dt"].strftime("%a")
-        line = (
-            f"**{label}**: {_describe_weather_code(code, True)}"
-            f" • H {_format_temp_pair(max(temps))}"
-            f" • L {_format_temp_pair(min(temps))}"
-        )
+        line = f"**{label}** {_weather_emoji(code, True)} {_describe_weather_code(code, True)} • {max(temps):.0f}°/{min(temps):.0f}°"
         if precips:
             line += f" • Rain {max(precips)}%"
         lines.append(line)
 
+    return "\n".join(lines) if lines else None
+
+
+def _format_point_air_quality(entries: Sequence[Dict[str, object]], hours: int) -> Optional[str]:
+    now = datetime.now(entries[0]["dt"].tzinfo) if entries and isinstance(entries[0]["dt"], datetime) else datetime.now()
+    target = now + timedelta(hours=hours)
+    candidate = min(entries, key=lambda entry: abs((entry["dt"] - target).total_seconds()))
+    uv = candidate.get("uv")
+    aqi = candidate.get("aqi")
+    parts = []
+    if isinstance(uv, float):
+        parts.append(f"UV {_format_uv_index(uv)}")
+    if isinstance(aqi, int):
+        parts.append(f"AQI {_format_aqi(aqi)}")
+    if not parts:
+        return None
+    return "Air quality: " + " • ".join(parts)
+
+
+def _format_daily_air_quality(entries: Sequence[Dict[str, object]], day_offset: int) -> Optional[str]:
+    first_dt = entries[0]["dt"]
+    if not isinstance(first_dt, datetime):
+        return None
+    target_date = first_dt.date() + timedelta(days=day_offset)
+    selected = [entry for entry in entries if isinstance(entry["dt"], datetime) and entry["dt"].date() == target_date]
+    if not selected:
+        return None
+    uvs = [value for value in (entry.get("uv") for entry in selected) if isinstance(value, float)]
+    aqis = [value for value in (entry.get("aqi") for entry in selected) if isinstance(value, int)]
+    parts = []
+    if uvs:
+        parts.append(f"UV peak {_format_uv_index(max(uvs))}")
+    if aqis:
+        parts.append(f"AQI peak {_format_aqi(max(aqis))}")
+    if not parts:
+        return None
+    return "Air quality: " + " • ".join(parts)
+
+
+def _format_weekly_air_quality(entries: Sequence[Dict[str, object]]) -> Optional[str]:
+    grouped: Dict[object, List[Dict[str, object]]] = {}
+    for entry in entries:
+        dt = entry.get("dt")
+        if not isinstance(dt, datetime):
+            continue
+        grouped.setdefault(dt.date(), []).append(entry)
+    if not grouped:
+        return None
+
+    lines = []
+    for idx, day in enumerate(sorted(grouped.keys())[:7]):
+        day_entries = grouped[day]
+        uvs = [value for value in (entry.get("uv") for entry in day_entries) if isinstance(value, float)]
+        aqis = [value for value in (entry.get("aqi") for entry in day_entries) if isinstance(value, int)]
+        if not uvs and not aqis:
+            continue
+        label = "Today" if idx == 0 else day_entries[0]["dt"].strftime("%a")
+        parts = []
+        if uvs:
+            parts.append(f"UV {_format_uv_index(max(uvs))}")
+        if aqis:
+            parts.append(f"AQI {_format_aqi(max(aqis))}")
+        lines.append(f"**{label}** • " + " • ".join(parts))
     return "\n".join(lines) if lines else None
 
 
