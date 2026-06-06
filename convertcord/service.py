@@ -71,6 +71,7 @@ from .conversions import (
 )
 from .temps import read_system_temps
 from .weather_card import render_weather_card
+from .weather_card_web import render_weather_card_browser
 
 if TYPE_CHECKING:
     from .currency import CurrencyConverter
@@ -468,9 +469,10 @@ class ConvertService:
         if not term:
             return ServiceResponse("Usage: `!urban <word or phrase>`", error=True)
         params = {"term": term, "strict": "false"}
+        base_url = _urban_api_base_url()
         try:
             async with self.http_session.get(
-                "https://unofficialurbandictionaryapi.com/api/search",
+                f"{base_url}/search",
                 params=params,
                 timeout=10,
             ) as resp:
@@ -909,31 +911,86 @@ class ConvertService:
         weather_code = _to_int(current.get("weather_code"))
         is_day = bool(_to_int(current.get("is_day"), default=1))
         condition = _describe_weather_code(weather_code, is_day)
-        image_bytes = render_weather_card(
+        temperature_c = _to_float(current.get("temperature_2m"), default=0.0) or 0.0
+        feels_c = _to_float(current.get("apparent_temperature"))
+        humidity = _to_int(current.get("relative_humidity_2m"))
+        dew_point_c = _to_float(current.get("dew_point_2m"))
+        wind_kmh = _to_float(current.get("wind_speed_10m"))
+        gust_kmh = _to_float(current.get("wind_gusts_10m"))
+        wind_direction = _degrees_to_compass(_to_int(current.get("wind_direction_10m")))
+        pressure_hpa = _to_float(current.get("pressure_msl"))
+        precip_probability = _to_int(current.get("precipitation_probability"))
+        cloud_cover = _to_int(current.get("cloud_cover"))
+        visibility_text = (
+            _format_visibility(_to_int(current.get("visibility")))
+            if _to_int(current.get("visibility")) is not None
+            else None
+        )
+        sunrise = _extract_time_label(daily.get("sunrise"), 0, tz_name)
+        sunset = _extract_time_label(daily.get("sunset"), 0, tz_name)
+        uv_text = _format_uv_index(air_quality.current_uv) if air_quality.current_uv is not None else None
+        aqi_text = _format_aqi(air_quality.current_us_aqi) if air_quality.current_us_aqi is not None else None
+        observed_text = _format_observed_card_label(current.get("time"), tz_name)
+        hourly_cards = _build_hourly_cards(hourly, tz_name)
+        daily_cards = _build_daily_cards(daily, tz_name)
+        forecast_rows = _build_forecast_rows(daily, tz_name)
+        accent_rgb = _weather_accent(weather_code, is_day)
+
+        browser_payload = {
+            "locationDisplay": location_display,
+            "condition": condition,
+            "conditionIcon": _weather_icon_name(weather_code, is_day),
+            "isDay": is_day,
+            "accentRgb": list(accent_rgb),
+            "temperatureC": temperature_c,
+            "temperatureF": _c_to_f(temperature_c),
+            "feelsC": feels_c,
+            "feelsF": _c_to_f(feels_c) if feels_c is not None else None,
+            "humidity": humidity,
+            "dewPointText": _format_temp_pair_compact(dew_point_c) if dew_point_c is not None else None,
+            "windText": f"{wind_direction + ' ' if wind_direction else ''}{wind_kmh:.1f} km/h ({_kmh_to_mph(wind_kmh):.1f} mph)" if wind_kmh is not None else None,
+            "gustText": f"{gust_kmh:.1f} km/h ({_kmh_to_mph(gust_kmh):.1f} mph)" if gust_kmh is not None else None,
+            "pressureText": f"{pressure_hpa:.0f} hPa" if pressure_hpa is not None else None,
+            "precipText": f"{precip_probability}%" if precip_probability is not None else None,
+            "cloudCoverText": f"{cloud_cover}%" if cloud_cover is not None else None,
+            "visibilityText": visibility_text,
+            "sunrise": sunrise,
+            "sunset": sunset,
+            "uvText": uv_text,
+            "aqiText": aqi_text,
+            "observedText": observed_text,
+            "heroIconDataUri": None,
+            "hourlyCards": hourly_cards,
+            "dailyCards": daily_cards,
+        }
+
+        image_bytes = render_weather_card_browser(browser_payload)
+        if not image_bytes:
+            image_bytes = render_weather_card(
             location_display=location_display,
             condition=condition,
             condition_icon=_weather_icon_name(weather_code, is_day),
-            temperature_c=_to_float(current.get("temperature_2m"), default=0.0) or 0.0,
-            feels_c=_to_float(current.get("apparent_temperature")),
-            humidity=_to_int(current.get("relative_humidity_2m")),
-            dew_point_c=_to_float(current.get("dew_point_2m")),
-            wind_kmh=_to_float(current.get("wind_speed_10m")),
-            gust_kmh=_to_float(current.get("wind_gusts_10m")),
-            wind_direction=_degrees_to_compass(_to_int(current.get("wind_direction_10m"))),
-            pressure_hpa=_to_float(current.get("pressure_msl")),
-            precip_probability=_to_int(current.get("precipitation_probability")),
-            cloud_cover=_to_int(current.get("cloud_cover")),
-            visibility_text=_format_visibility(_to_int(current.get("visibility"))) if _to_int(current.get("visibility")) is not None else None,
-            sunrise=_extract_time_label(daily.get("sunrise"), 0, tz_name),
-            sunset=_extract_time_label(daily.get("sunset"), 0, tz_name),
-            uv_text=_format_uv_index(air_quality.current_uv) if air_quality.current_uv is not None else None,
-            aqi_text=_format_aqi(air_quality.current_us_aqi) if air_quality.current_us_aqi is not None else None,
-            observed_text=_format_observed_card_label(current.get("time"), tz_name),
-            hourly_cards=_build_hourly_cards(hourly, tz_name),
-            daily_cards=_build_daily_cards(daily, tz_name),
-            forecast_rows=_build_forecast_rows(daily, tz_name),
-            accent_rgb=_weather_accent(weather_code, is_day),
-        )
+                temperature_c=temperature_c,
+                feels_c=feels_c,
+                humidity=humidity,
+                dew_point_c=dew_point_c,
+                wind_kmh=wind_kmh,
+                gust_kmh=gust_kmh,
+                wind_direction=wind_direction,
+                pressure_hpa=pressure_hpa,
+                precip_probability=precip_probability,
+                cloud_cover=cloud_cover,
+                visibility_text=visibility_text,
+                sunrise=sunrise,
+                sunset=sunset,
+                uv_text=uv_text,
+                aqi_text=aqi_text,
+                observed_text=observed_text,
+                hourly_cards=hourly_cards,
+                daily_cards=daily_cards,
+                forecast_rows=forecast_rows,
+                accent_rgb=accent_rgb,
+            )
         if not image_bytes:
             return None
         return ("weather-card.png", image_bytes)
@@ -1029,6 +1086,19 @@ def _format_temp_bucket(label: str, values: Sequence[float]) -> str:
 def _use_netdata_for_temps() -> bool:
     source = os.environ.get("CONVERTCORD_TEMPS_SOURCE", "").strip().lower()
     return source == "netdata" or bool(os.environ.get("CONVERTCORD_NETDATA_URL"))
+
+
+def _urban_api_base_url() -> str:
+    base_url = os.environ.get(
+        "CONVERTCORD_URBAN_API_URL",
+        "https://unofficialurbandictionaryapi.com/api",
+    ).strip()
+    if not base_url:
+        return "https://unofficialurbandictionaryapi.com/api"
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/api"):
+        return base_url
+    return f"{base_url}/api"
 
 
 def _classify_netdata_chart(chart_id: str, context: str, family: str) -> Optional[str]:
@@ -1573,6 +1643,7 @@ def _build_daily_cards(daily: Dict[str, object], tz_name: Optional[str]) -> Sequ
     codes = daily.get("weather_code") or []
     max_temps = daily.get("temperature_2m_max") or []
     min_temps = daily.get("temperature_2m_min") or []
+    precip_probs = daily.get("precipitation_probability_max") or []
     cards: List[Dict[str, object]] = []
     if not isinstance(times, list):
         return cards
@@ -1582,12 +1653,15 @@ def _build_daily_cards(daily: Dict[str, object], tz_name: Optional[str]) -> Sequ
         code = _to_int(codes[idx]) if idx < len(codes) else None
         max_temp = _to_float(max_temps[idx]) if idx < len(max_temps) else None
         min_temp = _to_float(min_temps[idx]) if idx < len(min_temps) else None
+        precip = _to_int(precip_probs[idx]) if idx < len(precip_probs) else None
         cards.append(
             {
                 "label": _format_forecast_day(raw_time, tz_name, idx),
                 "icon": _weather_icon_name(code, True),
+                "iconName": _weather_icon_name(code, True),
                 "summary": _describe_weather_code(code, True),
                 "temps": _format_card_temps(max_temp, min_temp),
+                "detail": f"Rain {precip}%" if precip is not None else "",
             }
         )
     return cards
@@ -1597,6 +1671,8 @@ def _build_hourly_cards(hourly: Dict[str, object], tz_name: Optional[str]) -> Se
     times = hourly.get("time") or []
     temps = hourly.get("temperature_2m") or []
     codes = hourly.get("weather_code") or []
+    precips = hourly.get("precipitation_probability") or []
+    winds = hourly.get("wind_speed_10m") or []
     cards: List[Dict[str, object]] = []
     if not isinstance(times, list):
         return cards
@@ -1610,11 +1686,16 @@ def _build_hourly_cards(hourly: Dict[str, object], tz_name: Optional[str]) -> Se
             continue
         temp = _to_float(temps[idx]) if idx < len(temps) else None
         code = _to_int(codes[idx]) if idx < len(codes) else None
+        precip = _to_int(precips[idx]) if idx < len(precips) else None
+        wind = _to_float(winds[idx]) if idx < len(winds) else None
         cards.append(
             {
                 "label": _format_clock_label(dt),
                 "icon": _weather_icon_name(code, True),
+                "iconName": _weather_icon_name(code, True),
                 "temp": f"{temp:.0f}°" if temp is not None else "--",
+                "precip": f"Rain {precip}%" if precip is not None else "",
+                "wind": f"{wind:.0f} km/h" if wind is not None else "",
             }
         )
         if len(cards) == 6:

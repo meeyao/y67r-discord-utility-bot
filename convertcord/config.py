@@ -35,6 +35,7 @@ class SanitizeSettings:
     tiktok: bool = True
     twitch: bool = True
     twitter: bool = True
+    detect_dupes: bool = True
 
 
 @dataclass
@@ -93,6 +94,7 @@ def load_config(path: Optional[str]) -> AppConfig:
         tiktok=bool(sanitize_raw.get("tiktok", sanitize_defaults.tiktok)),
         twitch=bool(sanitize_raw.get("twitch", sanitize_defaults.twitch)),
         twitter=bool(sanitize_raw.get("twitter", sanitize_defaults.twitter)),
+        detect_dupes=bool(sanitize_raw.get("detect_dupes", sanitize_defaults.detect_dupes)),
     )
 
     return AppConfig(discord=discord, currency=currency, sanitize=sanitize)
@@ -106,6 +108,7 @@ def update_sanitize_config(
     tiktok: Optional[bool] = None,
     twitch: Optional[bool] = None,
     twitter: Optional[bool] = None,
+    detect_dupes: Optional[bool] = None,
 ) -> SanitizeSettings:
     raw: dict = {}
     if path and os.path.exists(path):
@@ -120,9 +123,10 @@ def update_sanitize_config(
         tiktok=defaults.tiktok if tiktok is None else tiktok,
         twitch=defaults.twitch if twitch is None else twitch,
         twitter=defaults.twitter if twitter is None else twitter,
+        detect_dupes=defaults.detect_dupes if detect_dupes is None else detect_dupes,
     )
 
-    for field_name in ("instagram", "reddit", "tiktok", "twitch", "twitter"):
+    for field_name in ("instagram", "reddit", "tiktok", "twitch", "twitter", "detect_dupes"):
         if field_name not in sanitize_raw:
             sanitize_raw[field_name] = getattr(defaults, field_name)
     for field_name, override in {
@@ -131,6 +135,7 @@ def update_sanitize_config(
         "tiktok": tiktok,
         "twitch": twitch,
         "twitter": twitter,
+        "detect_dupes": detect_dupes,
     }.items():
         if override is not None:
             sanitize_raw[field_name] = override

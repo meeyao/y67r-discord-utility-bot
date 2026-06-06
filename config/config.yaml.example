@@ -33,3 +33,5 @@ sanitize:
   tiktok: true
   twitch: true
   twitter: true
+  # If a link is posted that was already seen in the last 24h, react with ♻️
+  detect_dupes: true

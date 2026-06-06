@@ -24,7 +24,7 @@ currency:
 
 sanitize:
   instagram: true
-  reddit: true
+  reddit: false
   tiktok: true
   twitch: false
   twitter: true

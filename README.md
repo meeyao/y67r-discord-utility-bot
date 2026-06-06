@@ -9,7 +9,8 @@ ConvertCord is a lightweight Discord bot focused on quick conversions between me
 - Smart defaults: `!convert 5km` automatically shows miles, but `!convert 5km ft` forces a specific target.
 - Optional channel/guild allowlists plus configurable status text.
 - Built-in aliases let you add shortcut commands like `$roll`, `$conch`, `$time`, and `$weather`.
-- Quick utility commands: `%` for a random percentage, `$roll [sides]` to roll dice, `$conch` for a magic answer, `$time [city]`, and `$weather [city]` with current conditions plus a 3-day forecast.
+- Duplicate Link Detection: If a link is posted that was already seen in the same channel within the last 24 hours, the bot reacts with ♻️. It automatically normalizes variants like `x.com`, `twitter.com`, `fxtwitter.com`, `vxtwitter.com`, and `fixupx.com` to catch cross-posts.
+- Quick utility commands: % for a random percentage, $roll [sides] to roll dice, $conch for a magic answer, $time [city], and $weather [city] with current conditions plus a 3-day forecast.
 - Weather lookups can also accept airport codes from the bundled CSV in `data/airport-codes.csv`, so queries like `!weather LAX`, `!weather AUH 12 hours`, or `!weather BOM 3 days` work without spelling out the city.
 
 ## Configuration
@@ -32,6 +33,7 @@ Environment overrides:
 - `CONVERTCORD_ALIAS` – Force the primary trigger alias without touching the config (e.g. `?conv`).
 - `CONVERTCORD_EXTRA_ALIASES` – Comma-delimited list of extra aliases (e.g. `$currency,$convert`) merged with config values.
 - `CONVERTCORD_AIRPORT_CODES_CSV` – Optional override path for the airport code CSV used for IATA/ICAO weather lookups. By default the bot uses `data/airport-codes.csv` from the repo/image.
+- `CONVERTCORD_URBAN_API_URL` – Base URL for the Urban API. In the bundled Docker image it defaults to the vendored local service at `http://127.0.0.1:8080/api`. Outside Docker it falls back to the public unofficial service unless you override it.
 
 ## Running locally
 ```bash
@@ -39,9 +41,15 @@ cd convertcord
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cd renderer
+npm install
+npm run build:css
+cd ..
 export CONVERTCORD_TOKEN="your token"
 python -m convertcord.bot
 ```
+
+The weather image renderer now uses React + Tailwind + Playwright Core with your system Chromium. If Chromium is installed in a non-standard path, set `CHROMIUM_PATH=/path/to/chromium`.
 
 ## Docker
 A minimal image is included:
@@ -53,6 +61,8 @@ docker run --rm \
   -v $(pwd)/convertcord/config:/config:ro \
   convertcord
 ```
+
+The container now installs `nodejs`, `npm`, and `chromium`, starts the vendored Urban API alongside the bot, and points `/urban` at `http://127.0.0.1:8080/api` by default. You do not need to set `CONVERTCORD_URBAN_API_URL` unless you want to override that.
 
 ## docker-compose
 Add the following service to `docker-compose.yaml`:
@@ -68,6 +78,8 @@ convertcord:
     - ./convertcord/config:/config:ro
   restart: unless-stopped
 ```
+
+The vendored Urban API under `vendor/unofficial-urban-dictionary-api` includes a defensive scraper fix for the current Urban Dictionary markup change that broke the public hosted instance.
 
 With everything running you can DM the bot or run commands such as:
 ```

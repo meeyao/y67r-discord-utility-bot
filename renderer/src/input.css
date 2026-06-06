@@ -1,0 +1,17 @@
+@import "tailwindcss";
+@source "./src";
+
+@theme {
+  --font-sans: "Noto Sans", "DejaVu Sans", "Segoe UI", sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+
+body {
+  font-family: var(--font-sans);
+}

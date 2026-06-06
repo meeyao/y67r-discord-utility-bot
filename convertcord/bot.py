@@ -17,6 +17,7 @@ from discord.ext import tasks
 from .config import AppConfig, load_config, resolve_aliases, resolve_token, update_sanitize_config
 from .conversions import MeasurementConverter, TemperatureConverter
 from .currency import CurrencyConverter
+from .dupes import DupeChecker
 from .reminders import ReminderManager
 from .sanitize import SanitizePlatforms, contains_url, extract_and_sanitize
 from .service import ConvertService
@@ -83,6 +84,7 @@ class _ConvertClient(discord.Client):
         self.config_path = config_path
         self.sanitize_platforms = sanitize_platforms
         self.reminder_manager = ReminderManager()
+        self.dupe_checker = DupeChecker()
         self._commands_synced = False
         self._register_app_commands()
 
@@ -112,9 +114,26 @@ class _ConvertClient(discord.Client):
         await self._deliver_reminders(message)
 
         content = message.content.strip()
+
+        # Check for duplicate links
+        if self.sanitize_platforms.detect_dupes:
+            guild_id = message.guild.id if message.guild else 0
+            original = await self.dupe_checker.check_and_add(
+                guild_id, message.channel.id, message.id, content
+            )
+            if original:
+                try:
+                    # https://discord.com/channels/{guild_id}/{channel_id}/{message_id}
+                    original_channel_id, original_message_id = original
+                    link_guild_id = guild_id or "@me"
+                    msg_link = f"https://discord.com/channels/{link_guild_id}/{original_channel_id}/{original_message_id}"
+                    await message.add_reaction("♻️")
+                    await message.reply(f"Duplicate of {msg_link}", mention_author=False)
+                except discord.HTTPException:
+                    pass
         
         if contains_url(content, self.sanitize_platforms):
-            sanitized_links = extract_and_sanitize(content, self.sanitize_platforms)
+            sanitized_links = await extract_and_sanitize(content, self.service.http_session, self.sanitize_platforms)
             if sanitized_links:
                 try:
                     await message.edit(suppress=True)
@@ -286,24 +305,27 @@ class _ConvertClient(discord.Client):
 
     async def _handle_slash_command(self, interaction: discord.Interaction, query: str, alias: Optional[str] = None) -> None:
         try:
+            await interaction.response.defer(thinking=True)
             response = await self.service.handle(query, invoked_alias=alias)
             if response is None:
-                await interaction.response.send_message("Sorry, I couldn't process that command.", ephemeral=True)
+                await interaction.followup.send("Sorry, I couldn't process that command.", ephemeral=True)
                 return
             embed = None if response.attachments else response.embed
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 response.content or None,
                 embed=embed,
                 files=[discord.File(io.BytesIO(data), filename=name) for name, data in response.attachments],
             )
             for extra in response.extra_messages:
-                await interaction.channel.send(extra)
+                if interaction.channel is not None:
+                    await interaction.channel.send(extra)
         except Exception as exc:
             logging.exception("Slash command failed: %s", exc)
-            await interaction.response.send_message(
-                "Sorry, I couldn't process that. Try again in a moment.",
-                ephemeral=True,
-            )
+            error_message = "Sorry, I couldn't process that. Try again in a moment."
+            if interaction.response.is_done():
+                await interaction.followup.send(error_message, ephemeral=True)
+            else:
+                await interaction.response.send_message(error_message, ephemeral=True)
 
     async def _set_timezone_logic(self, context_obj: discord.Message | discord.Interaction, user: discord.User | discord.Member, location_query: str):
         # We leverage the existing ConvertService to resolve location -> timezone
@@ -488,6 +510,7 @@ class _ConvertClient(discord.Client):
                 app_commands.Choice(name="TikTok", value="tiktok"),
                 app_commands.Choice(name="Twitch", value="twitch"),
                 app_commands.Choice(name="Twitter/X", value="twitter"),
+                app_commands.Choice(name="Detect Dupes", value="detect_dupes"),
             ],
             enabled=[
                 app_commands.Choice(name="Enabled", value="true"),
@@ -507,9 +530,10 @@ class _ConvertClient(discord.Client):
                 tiktok=updated.tiktok,
                 twitch=updated.twitch,
                 twitter=updated.twitter,
+                detect_dupes=updated.detect_dupes,
             )
             await interaction.response.send_message(
-                f"Sanitization for {platform.name} is now {'enabled' if is_enabled else 'disabled'}.\n"
+                f"{platform.name} is now {'enabled' if is_enabled else 'disabled'}.\n"
                 f"{self._sanitize_settings_text()}",
                 ephemeral=True,
             )
@@ -521,8 +545,9 @@ class _ConvertClient(discord.Client):
             f"TikTok: {'on' if self.sanitize_platforms.tiktok else 'off'}",
             f"Twitch: {'on' if self.sanitize_platforms.twitch else 'off'}",
             f"Twitter/X: {'on' if self.sanitize_platforms.twitter else 'off'}",
+            f"Detect Dupes (24h): {'on' if self.sanitize_platforms.detect_dupes else 'off'}",
         ]
-        return "Current sanitize settings:\n" + "\n".join(status_lines)
+        return "Current settings:\n" + "\n".join(status_lines)
 
 
 async def run_bot() -> None:
