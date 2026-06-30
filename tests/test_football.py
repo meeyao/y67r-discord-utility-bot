@@ -118,7 +118,7 @@ class FormatNextMatchTests(unittest.TestCase):
         result = self.fb.format_next_match(team, match)
         self.assertIn("Brazil", result)
         self.assertIn("Argentina", result)
-        self.assertIn("Matchday", result)
+        self.assertIn("MD", result)
 
     def test_format_next_match_no_match(self) -> None:
         team = {"name": "Brazil"}

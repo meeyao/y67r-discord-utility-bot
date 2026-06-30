@@ -1057,7 +1057,9 @@ class _ConvertClient(discord.Client):
         for r in rows:
             hf = _get_flag(r['home'])
             af = _get_flag(r['away'])
-            line = f"**MD{r['matchday']} — {hf}{r['home']} vs {af}{r['away']}**　{r['home_score']}–{r['away_score']}　• {r['status']}"
+            md = r['matchday']
+            rnd = f"MD{md}" if md is not None else "Knockout"
+            line = f"**{rnd} — {hf}{r['home']} vs {af}{r['away']}**　{r['home_score']}–{r['away_score']}　• {r['status']}"
             desc_parts.append(line)
 
             if r.get("stats"):

@@ -573,11 +573,11 @@ class FootballService:
         for d, m in upcoming[:15]:
             home = self._team_name(m, "homeTeam")
             away = self._team_name(m, "awayTeam")
-            md = m.get("matchday", "?")
+            rnd = self._fmt_round(m)
             ts = f"<t:{int(d.timestamp())}:f>"
             hf = _get_flag(home)
             af = _get_flag(away)
-            lines.append(f"• MD{md} {hf}{home} vs {af}{away} — {ts}")
+            lines.append(f"• {rnd} {hf}{home} vs {af}{away} — {ts}")
 
         return "\n".join(lines)
 
@@ -610,9 +610,9 @@ class FootballService:
             home = (match.get("homeTeam") or {}).get("name") or "?"
             away = (match.get("awayTeam") or {}).get("name") or "?"
             ts = _fmt_ts(match.get("utcDate"))
-            md = match.get("matchday", "?")
+            rnd = self._fmt_round(match)
             parts.append(f"")
-            parts.append(f"**Next Match** — MD{md}")
+            parts.append(f"**Next Match** — {rnd}")
             parts.append(f"{_get_flag(home)}{home} vs {_get_flag(away)}{away}")
             if ts:
                 parts.append(ts)
@@ -626,7 +626,7 @@ class FootballService:
         if not matches:
             return "No upcoming matches found."
         ts = _fmt_rel_ts(matches[0].get("utcDate"))
-        md = matches[0].get("matchday", "?")
+        rnd = self._fmt_round(matches[0])
         plural = "es" if len(matches) > 1 else ""
         parts = [f"**FIFA World Cup — Next Match{plural}**"]
         for m in matches:
@@ -635,7 +635,7 @@ class FootballService:
             parts.append(f"{_get_flag(home)}{home} vs {_get_flag(away)}{away}")
         if ts:
             parts.append(ts)
-        parts.append(f"Matchday {md}")
+        parts.append(rnd)
         return "\n".join(parts)
 
     async def _get_api_football(self, path: str) -> Optional[Any]:
@@ -806,7 +806,7 @@ class FootballService:
             home_score = ft.get("home", "?")
             away_score = ft.get("away", "?")
             status = m.get("status", "")
-            md = m.get("matchday", "?")
+            rnd = self._fmt_round(m)
             minute = m.get("minute", "")
             status_str = f" • {minute}'" if minute else f" • {status}"
             if ht.get("home") is not None:
@@ -823,7 +823,7 @@ class FootballService:
                     team_name = (g.get("team") or {}).get("name", "")
                     scorers.append(f"{name} {goal_min}{suffix}'" + (f" ({team_name})" if team_name else ""))
 
-            header = f"**MD{md} — {hf}{home} vs {af}{away}**"
+            header = f"**{rnd} — {hf}{home} vs {af}{away}**"
             scores = f"{home_score} – {away_score}"
             lines.append(f"{header}　{scores}{status_str}")
 
@@ -903,8 +903,8 @@ class FootballService:
             score = m.get("score") or {}
             ft = score.get("fullTime") or {}
             ht = score.get("halfTime") or {}
-            md = m.get("matchday", "?")
-            lines.append(f"**MD{md} — {hf}{home} vs {af}{away}**")
+            rnd = self._fmt_round(m)
+            lines.append(f"**{rnd} — {hf}{home} vs {af}{away}**")
             lines.append(f"{ft.get('home', '?')} – {ft.get('away', '?')}")
             if ht.get("home") is not None:
                 lines.append(f"HT: {ht['home']}–{ht['away']}")
@@ -926,8 +926,8 @@ class FootballService:
             score = m.get("score") or {}
             ft = score.get("fullTime") or {}
             ts = _fmt_ts(m.get("utcDate"))
-            md = m.get("matchday", "?")
-            parts = [f"• MD{md} {hf}{home} vs {af}{away}　{ft.get('home', '?')}–{ft.get('away', '?')}"]
+            rnd = self._fmt_round(m)
+            parts = [f"• {rnd} {hf}{home} vs {af}{away}　{ft.get('home', '?')}–{ft.get('away', '?')}"]
             if ts:
                 parts.append(ts)
             lines.append(" ".join(parts))
@@ -943,19 +943,28 @@ class FootballService:
         hf = _get_flag(home)
         af = _get_flag(away)
         ts = _fmt_rel_ts(match.get("utcDate"))
-        md = match.get("matchday", "?")
+        rnd = self._fmt_round(match)
         status = match.get("status") or ""
 
         parts = [f"**{name}** — Next Match"]
         parts.append(f"{hf}{home} vs {af}{away}")
         if ts:
             parts.append(ts)
-        parts.append(f"Matchday {md}")
+        parts.append(rnd)
         if status and status != "TIMED":
             parts.append(f"Status: {status}")
 
         return "\n".join(parts)
 
+
+    @staticmethod
+    @staticmethod
+    def _fmt_round(match: Dict[str, Any]) -> str:
+        md = match.get("matchday")
+        if md is not None:
+            return f"MD{md}"
+        stage = match.get("stage", "")
+        return _STAGE_NAMES.get(stage, stage)
 
     @staticmethod
     def _team_name(match: Dict[str, Any], side: str) -> str:
