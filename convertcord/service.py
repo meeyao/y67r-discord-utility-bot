@@ -72,6 +72,7 @@ from .conversions import (
 from .temps import read_system_temps
 from .weather_card import render_weather_card
 from .weather_card_web import render_weather_card_browser
+from .gta import gta_countdown
 
 if TYPE_CHECKING:
     from .currency import CurrencyConverter
@@ -134,6 +135,8 @@ class ConvertService:
             args = ["temps", *args]
         elif alias_hint == "urban":
             args = ["urban", *args]
+        elif alias_hint == "gta":
+            args = ["gta", *args]
 
         if not args:
             if alias_hint == "percent":
@@ -163,6 +166,8 @@ class ConvertService:
                 return await self._handle_urban(args[1:])
             if first in {"smite", "$smite", "!smite"}:
                 return self._handle_smite()
+            if first in {"gta", "$gta", "!gta"}:
+                return self._handle_gta()
             if first in {"price", "$price", "stock", "$stock", "stocks", "crypto", "$crypto"}:
                 return None
 
@@ -464,6 +469,9 @@ class ConvertService:
     def _handle_smite(self) -> ServiceResponse:
         return ServiceResponse("yuvo", extra_messages=("play", "smite"))
 
+    def _handle_gta(self) -> ServiceResponse:
+        return ServiceResponse(gta_countdown())
+
     async def _handle_urban(self, args: Sequence[str]) -> ServiceResponse:
         term = " ".join(args).strip()
         if not term:
@@ -527,6 +535,8 @@ class ConvertService:
             return "temps"
         if cleaned in {"urban", "ud"}:
             return "urban"
+        if cleaned in {"gta"}:
+            return "gta"
         return None
 
     async def _get_temps(self) -> Dict[str, List[float]]:

@@ -12,7 +12,7 @@ class DiscordSettings:
     token: Optional[str] = None
     alias: str = "$convert"
     additional_aliases: List[str] = field(
-        default_factory=lambda: ["$currency", "!roll", "!conch", "!time", "!weather", "!temps", "%"]
+        default_factory=lambda: ["$currency", "!roll", "!conch", "!time", "!weather", "!temps", "%", "!football", "!wc", "!fifa", "!team", "!ppv", "!rotate", "!gta"]
     )
     allowed_channel_ids: List[int] = field(default_factory=list)
     allowed_guild_ids: List[int] = field(default_factory=list)
@@ -29,6 +29,12 @@ class CurrencySettings:
 
 
 @dataclass
+class FootballSettings:
+    api_key: Optional[str] = None
+    api_sports_key: Optional[str] = None
+
+
+@dataclass
 class SanitizeSettings:
     instagram: bool = True
     reddit: bool = True
@@ -42,6 +48,7 @@ class SanitizeSettings:
 class AppConfig:
     discord: DiscordSettings = field(default_factory=DiscordSettings)
     currency: CurrencySettings = field(default_factory=CurrencySettings)
+    football: FootballSettings = field(default_factory=FootballSettings)
     sanitize: SanitizeSettings = field(default_factory=SanitizeSettings)
 
 
@@ -65,9 +72,11 @@ def load_config(path: Optional[str]) -> AppConfig:
 
     discord_raw = raw.get("discord", {}) or {}
     currency_raw = raw.get("currency", {}) or {}
+    football_raw = raw.get("football", {}) or {}
     sanitize_raw = raw.get("sanitize", {}) or {}
     discord_defaults = DiscordSettings()
     currency_defaults = CurrencySettings()
+    football_defaults = FootballSettings()
     sanitize_defaults = SanitizeSettings()
 
     discord = DiscordSettings(
@@ -88,6 +97,10 @@ def load_config(path: Optional[str]) -> AppConfig:
         api_url=(currency_raw.get("api_url") or currency_defaults.api_url).strip(),
     )
 
+    football_key = os.environ.get("CONVERTCORD_FOOTBALL_API_KEY") or football_raw.get("api_key")
+    api_sports_key = os.environ.get("CONVERTCORD_API_SPORTS_KEY") or football_raw.get("api_sports_key")
+    football = FootballSettings(api_key=football_key, api_sports_key=api_sports_key)
+
     sanitize = SanitizeSettings(
         instagram=bool(sanitize_raw.get("instagram", sanitize_defaults.instagram)),
         reddit=bool(sanitize_raw.get("reddit", sanitize_defaults.reddit)),
@@ -97,7 +110,7 @@ def load_config(path: Optional[str]) -> AppConfig:
         detect_dupes=bool(sanitize_raw.get("detect_dupes", sanitize_defaults.detect_dupes)),
     )
 
-    return AppConfig(discord=discord, currency=currency, sanitize=sanitize)
+    return AppConfig(discord=discord, currency=currency, football=football, sanitize=sanitize)
 
 
 def update_sanitize_config(

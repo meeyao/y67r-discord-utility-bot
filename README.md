@@ -12,6 +12,10 @@ ConvertCord is a lightweight Discord bot focused on quick conversions between me
 - Duplicate Link Detection: If a link is posted that was already seen in the same channel within the last 24 hours, the bot reacts with ♻️. It automatically normalizes variants like `x.com`, `twitter.com`, `fxtwitter.com`, `vxtwitter.com`, and `fixupx.com` to catch cross-posts.
 - Quick utility commands: % for a random percentage, $roll [sides] to roll dice, $conch for a magic answer, $time [city], and $weather [city] with current conditions plus a 3-day forecast.
 - Weather lookups can also accept airport codes from the bundled CSV in `data/airport-codes.csv`, so queries like `!weather LAX`, `!weather AUH 12 hours`, or `!weather BOM 3 days` work without spelling out the city.
+- **World Cup / Football (Soccer)**: `!football` (or `!wc`, `!fifa`, `!soccer`, `!team`) with subcommands for live scores, match schedules, group standings, team lookups, and kickoff countdowns. Powered by football-data.org and api-sports.io.
+- **PPV Stream Finder**: `!ppv` locates the next World Cup or UFC stream from ppv.st and alternative sources. `!ppv ufc` finds the next UFC event stream.
+- **Streamed Sources**: `!streamed` or `!stream` shows combined stream listings from multiple sources.
+- **GTA VI Countdown**: `!gta` displays a live countdown to the Grand Theft Auto VI launch.
 
 ## Configuration
 1. Copy the example config and adjust it as needed:
@@ -34,6 +38,8 @@ Environment overrides:
 - `CONVERTCORD_EXTRA_ALIASES` – Comma-delimited list of extra aliases (e.g. `$currency,$convert`) merged with config values.
 - `CONVERTCORD_AIRPORT_CODES_CSV` – Optional override path for the airport code CSV used for IATA/ICAO weather lookups. By default the bot uses `data/airport-codes.csv` from the repo/image.
 - `CONVERTCORD_URBAN_API_URL` – Base URL for the Urban API. In the bundled Docker image it defaults to the vendored local service at `http://127.0.0.1:8080/api`. Outside Docker it falls back to the public unofficial service unless you override it.
+- `CONVERTCORD_FOOTBALL_API_KEY` – Override for the `football-data.org` API key (takes precedence over the config file).
+- `CONVERTCORD_FOOTBALL_API_SPORTS_KEY` – Override for the `api-sports.io` API key (takes precedence over the config file).
 
 ## Running locally
 ```bash
@@ -81,6 +87,8 @@ convertcord:
 
 The vendored Urban API under `vendor/unofficial-urban-dictionary-api` includes a defensive scraper fix for the current Urban Dictionary markup change that broke the public hosted instance.
 
+A `ppv-resolver/` service is also bundled and started alongside the bot for PPV stream resolution.
+
 With everything running you can DM the bot or run commands such as:
 ```
 !convert 70f c
@@ -91,4 +99,11 @@ $currency 100 usd eur
 !conch should I sleep?
 !time london
 !weather austin
+!football live
+!football standings
+!football team Argentina
+!football wc
+!ppv
+!ppv ufc
+!gta
 ```

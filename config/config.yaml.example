@@ -11,6 +11,12 @@ discord:
     - "!time"
     - "!weather"
     - "%"
+    - "!football"
+    - "!wc"
+    - "!fifa"
+    - "!soccer"
+    - "!team"
+    - "!gta"
   # Optional safety rails. Leave empty to allow every channel / guild the bot can see.
   allowed_channel_ids: []
   allowed_guild_ids: []
@@ -25,6 +31,11 @@ currency:
     - GBP
   cache_minutes: 180
   api_url: https://open.er-api.com/v6/latest/{base}
+
+football:
+  # Optional API key for football-data.org (free registration at https://www.football-data.org)
+  # Without a key the API still works but with stricter rate limits.
+  api_key: ""
 
 sanitize:
   # Toggle per-platform link rewriting. Set twitch: false to keep Discord's native Twitch embeds.

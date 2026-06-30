@@ -19,12 +19,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY renderer/package.json renderer/package-lock.json /app/renderer/
 RUN cd /app/renderer && npm ci
 
+COPY ppv-resolver/package.json ppv-resolver/package-lock.json /app/ppv-resolver/
+RUN cd /app/ppv-resolver && npm ci
+
 COPY vendor/unofficial-urban-dictionary-api/package.json vendor/unofficial-urban-dictionary-api/package-lock.json /app/vendor/unofficial-urban-dictionary-api/
 RUN cd /app/vendor/unofficial-urban-dictionary-api && npm ci --omit=dev
 
 COPY convertcord /app/convertcord
 COPY data /app/data
 COPY renderer /app/renderer
+COPY ppv-resolver /app/ppv-resolver
 COPY vendor/unofficial-urban-dictionary-api /app/vendor/unofficial-urban-dictionary-api
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 

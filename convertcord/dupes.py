@@ -20,9 +20,9 @@ EXCLUDED_DOMAINS = {
     "discord.gg"
 }
 
-# Twitter/X variants normalization
+# Twitter/X variants normalization — extracts just the status ID, ignores username path segment
 TWITTER_VARIANTS_RE = re.compile(
-    r"(?i)https?://(?:www\.)?(?:twitter|x|fxtwitter|vxtwitter|fixupx)\.com/(?P<username>\w+)(?P<data>/status/\d+)(?P<extra>[^?\s)\]`|]*)"
+    r"(?i)https?://(?:www\.)?(?:twitter|x|fxtwitter|vxtwitter|fixupx)\.com/[^/]+/status/(?P<status_id>\d+)"
 )
 
 YOUTUBE_HOSTS = {
@@ -65,30 +65,34 @@ class DupeChecker:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_links_guild_created ON links(guild_id, created_at)")
-            
+
             # Migration: add message_id if missing
             try:
                 conn.execute("ALTER TABLE links ADD COLUMN message_id INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
 
+            # Migration: add guild_id if missing
             try:
                 conn.execute("ALTER TABLE links ADD COLUMN guild_id INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
-                
+
+            # Index must be created after migrations so guild_id is guaranteed to exist
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_links_guild_created ON links(guild_id, created_at)")
+
             conn.commit()
 
     def normalize_url(self, url: str) -> str:
+        # Strip trailing punctuation that URL_RE may have captured (,, ., ?, !, ;, :, ', ")
+        url = url.rstrip(".,?!;:'\"")
         url = url.rstrip("/")
-        
-        # Twitter/X normalization
+
+        # Twitter/X normalization — always keyed on status ID alone so
+        # /i/status/123 and /username/status/123 resolve to the same key
         twitter_match = TWITTER_VARIANTS_RE.match(url)
         if twitter_match:
-            # We normalize all twitter variants to twitter.com/user/status/ID
-            # and ignore any extra path info or query params
-            return f"https://twitter.com/{twitter_match.group('username').lower()}/status/{twitter_match.group('data').split('/')[-1]}"
+            return f"https://twitter.com/i/status/{twitter_match.group('status_id')}"
 
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
@@ -204,6 +208,7 @@ class DupeChecker:
                 # Cleanup old entries first
                 conn.execute("DELETE FROM links WHERE created_at < ?", (day_ago.isoformat(),))
                 
+                found_dupe = False
                 for norm_url in normalized_links:
                     # Check if exists
                     cursor = conn.execute(
@@ -220,7 +225,9 @@ class DupeChecker:
                     )
                     row = cursor.fetchone()
                     if row:
-                        original = (row[0], row[1])
+                        if not found_dupe:
+                            original = (row[0], row[1])
+                            found_dupe = True
                     else:
                         # Add new link
                         conn.execute(
@@ -231,3 +238,41 @@ class DupeChecker:
 
         _db_op()
         return original
+
+    def index_message(
+        self, guild_id: int, channel_id: int, message_id: int, content: str, created_at: datetime
+    ) -> int:
+        """
+        Insert-only backfill: extracts links from content and records them with
+        the message's actual timestamp. Does NOT check for dupes — use this
+        when crawling history so existing messages are not flagged against each
+        other. Returns the number of new links inserted.
+        """
+        raw_links = URL_RE.findall(content)
+        if not raw_links:
+            return 0
+
+        links = [link for link in raw_links if not self.is_excluded(link)]
+        if not links:
+            return 0
+
+        normalized_links = {self.normalize_url(link) for link in links}
+        inserted = 0
+
+        with sqlite3.connect(self.db_path) as conn:
+            for norm_url in normalized_links:
+                # Only insert if this exact (guild, url) combo isn't already stored
+                existing = conn.execute(
+                    "SELECT 1 FROM links WHERE guild_id = ? AND normalized_url = ? LIMIT 1",
+                    (guild_id, norm_url),
+                ).fetchone()
+                if not existing:
+                    conn.execute(
+                        "INSERT INTO links (guild_id, channel_id, message_id, normalized_url, created_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (guild_id, channel_id, message_id, norm_url, created_at.isoformat()),
+                    )
+                    inserted += 1
+            conn.commit()
+
+        return inserted
