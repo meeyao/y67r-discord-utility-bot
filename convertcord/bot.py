@@ -1093,7 +1093,7 @@ class _ConvertClient(discord.Client):
 
     def _build_next_match_embed(self, matches: List[Dict[str, Any]]) -> discord.Embed:
         ts = _fmt_rel_ts(matches[0].get("utcDate"))
-        md = matches[0].get("matchday", "?")
+        rnd = FootballService._fmt_round(matches[0])
         plural = "es" if len(matches) > 1 else ""
         desc_parts: List[str] = []
         for m in matches:
@@ -1104,7 +1104,7 @@ class _ConvertClient(discord.Client):
             desc_parts.append(f"{hf}{home} vs {af}{away}")
         if ts:
             desc_parts.append(ts)
-        desc_parts.append(f"Matchday {md}")
+        desc_parts.append(rnd)
         return discord.Embed(
             title=f"⚽ FIFA World Cup — Next Match{plural}",
             description="\n".join(desc_parts),
@@ -1124,12 +1124,12 @@ class _ConvertClient(discord.Client):
         hf = _get_flag(home)
         af = _get_flag(away)
         ts = _fmt_rel_ts(match.get("utcDate"))
-        md = match.get("matchday", "?")
+        rnd = FootballService._fmt_round(match)
         status = match.get("status") or ""
         desc_parts = [f"{hf}{home} vs {af}{away}"]
         if ts:
             desc_parts.append(ts)
-        desc_parts.append(f"Matchday {md}")
+        desc_parts.append(rnd)
         if status and status != "TIMED":
             desc_parts.append(f"Status: {status}")
         return discord.Embed(
@@ -1151,8 +1151,8 @@ class _ConvertClient(discord.Client):
             score = m.get("score") or {}
             ft = score.get("fullTime") or {}
             ht = score.get("halfTime") or {}
-            md = m.get("matchday", "?")
-            desc_parts.append(f"**MD{md} — {hf}{home} vs {af}{away}**")
+            rnd = FootballService._fmt_round(m)
+            desc_parts.append(f"**{rnd} — {hf}{home} vs {af}{away}**")
             desc_parts.append(f"{ft.get('home', '?')} – {ft.get('away', '?')}")
             if ht.get("home") is not None:
                 desc_parts.append(f"HT: {ht['home']}–{ht['away']}")
@@ -1175,8 +1175,8 @@ class _ConvertClient(discord.Client):
             score = m.get("score") or {}
             ft = score.get("fullTime") or {}
             ts = _fmt_ts(m.get("utcDate"))
-            md = m.get("matchday", "?")
-            parts = [f"• MD{md} {hf}{home} vs {af}{away}　{ft.get('home', '?')}–{ft.get('away', '?')}"]
+            rnd = FootballService._fmt_round(m)
+            parts = [f"• {rnd} {hf}{home} vs {af}{away}　{ft.get('home', '?')}–{ft.get('away', '?')}"]
             if ts:
                 parts.append(ts)
             desc_parts.append(" ".join(parts))
@@ -1338,10 +1338,10 @@ class _ConvertClient(discord.Client):
                 away = (m.get("awayTeam") or {}).get("name", "?")
                 hf = _get_flag(home)
                 af = _get_flag(away)
-                md = m.get("matchday", "?")
+                rnd = FootballService._fmt_round(m)
                 mention = f"<@&1515758126689812542>"
                 await channel.send(
-                    f"{mention} **Match starting soon!** MD{md} — {hf}{home} vs {af}{away} "
+                    f"{mention} **Match starting soon!** {rnd} — {hf}{home} vs {af}{away} "
                     f"<t:{int(d.timestamp())}:R>"
                 )
 
