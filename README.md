@@ -3,19 +3,63 @@
 ConvertCord is a lightweight Discord bot focused on quick conversions between metric / imperial measurements, common currencies, temperatures, plus a handful of fun utilities (random percentages, dice rolls, a “magic conch”, and quick time/weather lookups) – perfect for EU ↔ NA chatter. The trigger alias is configurable (default `$convert`), so you can drop it into any friend server without colliding with existing bots.
 
 ## Features
-- Convert temperatures between °C, °F, and K.
-- Currency lookups backed by exchangerate.host with caching to avoid rate limits.
-- Measurement support for length, weight, volume, speed, and area units (metric + imperial counterparts).
-- Smart defaults: `!convert 5km` automatically shows miles, but `!convert 5km ft` forces a specific target.
-- Optional channel/guild allowlists plus configurable status text.
-- Built-in aliases let you add shortcut commands like `$roll`, `$conch`, `$time`, and `$weather`.
-- Duplicate Link Detection: If a link is posted that was already seen in the same channel within the last 24 hours, the bot reacts with ♻️. It automatically normalizes variants like `x.com`, `twitter.com`, `fxtwitter.com`, `vxtwitter.com`, and `fixupx.com` to catch cross-posts.
-- Quick utility commands: % for a random percentage, $roll [sides] to roll dice, $conch for a magic answer, $time [city], and $weather [city] with current conditions plus a 3-day forecast.
-- Weather lookups can also accept airport codes from the bundled CSV in `data/airport-codes.csv`, so queries like `!weather LAX`, `!weather AUH 12 hours`, or `!weather BOM 3 days` work without spelling out the city.
-- **World Cup / Football (Soccer)**: `!football` (or `!wc`, `!fifa`, `!soccer`, `!team`) with subcommands for live scores, match schedules, group standings, team lookups, and kickoff countdowns. Powered by football-data.org and api-sports.io.
-- **PPV Stream Finder**: `!ppv` locates the next World Cup or UFC stream from ppv.st and alternative sources. `!ppv ufc` finds the next UFC event stream.
-- **Streamed Sources**: `!streamed` or `!stream` shows combined stream listings from multiple sources.
-- **GTA VI Countdown**: `!gta` displays a live countdown to the Grand Theft Auto VI launch.
+
+### Conversions & Lookups
+- **Convert** — temperatures (°C, °F, K), length, weight, volume, speed, and area (metric + imperial). Smart defaults: `!convert 5km` auto-shows miles, `!convert 5km ft` forces a specific target.
+- **Currency** — `$convert 20 usd eur` or `$currency 100 eur`. Backed by open.er-api.com with configurable caching.
+- **Urban Dictionary** — `!urban` or `!ud <word>` to look up definitions from the vendored Urban Dictionary API.
+- **Temps** — `!temps` shows a quick reference table of common temperature conversions.
+
+### Weather
+- **Weather lookups** — `!weather <city>` with current conditions + 3-day forecast. Supports airport codes (IATA/ICAO) from the bundled CSV: `!weather LAX`, `!weather AUH 12 hours`, `!weather BOM 3 days`.
+- **Image rendering** — Weather forecasts are rendered as styled images via React + Tailwind + Playwright Core (Chromium). Includes custom weather icons.
+
+### Time, Reminders & Timezones
+- **Time** — `!time <city>` shows the current time for any city or IATA code. Supports broadcaster abbreviations (e.g. `!time asmongold`).
+- **Timezone** — `!timezone <city>` sets your personal timezone for daily reminders.
+- **Reminders** — `!remind <duration> <message>` for one-off reminders, `!daily-remind <HH:MM> <message>` for recurring daily reminders. List with `!reminders-list`, delete with `!reminders-delete`.
+- **Rotate** — `!rotate <angle>` — reply to an image message or attach one to rotate it by a given angle.
+
+### Utilities
+- **Roll** — `!roll 20` rolls dice with configurable sides.
+- **Conch** — `!conch <question>` — the Magic Conch answers your yes/no questions.
+- **Percent** — `%` or `!percent` gives a random percentage.
+- **GTA VI Countdown** — `!gta` displays a live countdown to the Grand Theft Auto VI launch.
+
+### Football / World Cup
+- **Football (Soccer)** — `!football` (or `!wc`, `!fifa`, `!soccer`, `!team`) with subcommands:
+  - `live` — live scores from ongoing matches
+  - `wc` / `worldcup` — next World Cup match schedule
+  - `standings [group]` — group standings for the World Cup
+  - `team <country>` — upcoming matches for a specific team
+  - `stream` / `streamed` — combined stream sources from ppv.st and streamed.su
+- Powered by football-data.org and api-sports.io.
+
+### PPV Stream Finder
+- `!ppv` — locates the next World Cup stream from ppv.st and alternative sources.
+- `!ppv ufc` — finds the next UFC event stream.
+- `!streamed` or `!stream` — shows combined stream listings from all available sources.
+- Uses the bundled `ppv-resolver/` Node.js service for HLS stream resolution.
+
+### Link Rewriting (Sanitize)
+- Automatically rewrites links to fix cross-platform embeds. Toggle per platform via config or slash commands:
+  - **Instagram** — `instagram.com` → `ddinstagram.com`
+  - **Reddit** — `reddit.com` → `rxddit.com`
+  - **TikTok** — `tiktok.com` → `vxtiktok.com` (resolves usernames)
+  - **Twitch** — `twitch.tv/clips/...` → `clips.twitch.tv/...` (resolves streamer names)
+  - **Twitter / X** — `twitter.com` / `x.com` → `fxtwitter.com` (normalizes `vxtwitter.com` / `fixupx.com` too)
+- Slash commands: `/sanitize-status` shows current settings, `/sanitize-toggle <platform>` flips a platform on/off at runtime.
+
+### Duplicate Link Detection
+- If a link is posted that was already seen in the same channel within the last 24 hours, the bot reacts with ♻️.
+- Automatically normalizes URL variants (`x.com`, `twitter.com`, `fxtwitter.com`, `vxtwitter.com`, `fixupx.com`, `instagram.com`/`ddinstagram.com`, and generic shortlinks) to catch cross-posts.
+- Media file links (images, videos, audio) and Discord system domains are excluded from detection.
+
+### Additional
+- **Slash commands** — all major features available as `/convert`, `/weather`, `/time`, `/roll`, `/conch`, `/urban`, `/temps`, `/football`, `/ppv`, `/ufc`, `/gta`, `/remind`, `/daily-remind`, `/reminders-list`, `/reminders-delete`, `/timezone`, `/sanitize-status`, `/sanitize-toggle`.
+- **Configurable trigger alias** — Default `$convert`, change via config or `CONVERTCORD_ALIAS` env var.
+- **Channel / Guild allowlists** — Optional safety rails; leave empty to allow everywhere.
+- **Runtime slash sync** — `!sync` instantly registers slash commands in the current guild.
 
 ## Configuration
 1. Copy the example config and adjust it as needed:
