@@ -48,6 +48,44 @@ _API_FB_STAGE_MAP: Dict[str, str] = {
     "Final": "FINAL",
 }
 
+# Knockout stage indices (by date-sort order within each stage) that feed into the next round.
+# Maps each (stage, slot_index) to the pair of (prev_stage, prev_slot_index) winners that fill it.
+# This encodes the tournament bracket topology (fixed format, not match predictions).
+_BRACKET_FEEDERS: Dict[str, int] = {
+    ("LAST_16", 0, "homeTeam"): ("LAST_32", 0),
+    ("LAST_16", 0, "awayTeam"): ("LAST_32", 3),
+    ("LAST_16", 1, "homeTeam"): ("LAST_32", 2),
+    ("LAST_16", 1, "awayTeam"): ("LAST_32", 5),
+    ("LAST_16", 2, "homeTeam"): ("LAST_32", 1),
+    ("LAST_16", 2, "awayTeam"): ("LAST_32", 4),
+    ("LAST_16", 3, "homeTeam"): ("LAST_32", 6),
+    ("LAST_16", 3, "awayTeam"): ("LAST_32", 7),
+    ("LAST_16", 4, "homeTeam"): ("LAST_32", 10),
+    ("LAST_16", 4, "awayTeam"): ("LAST_32", 11),
+    ("LAST_16", 5, "homeTeam"): ("LAST_32", 8),
+    ("LAST_16", 5, "awayTeam"): ("LAST_32", 9),
+    ("LAST_16", 6, "homeTeam"): ("LAST_32", 13),
+    ("LAST_16", 6, "awayTeam"): ("LAST_32", 15),
+    ("LAST_16", 7, "homeTeam"): ("LAST_32", 12),
+    ("LAST_16", 7, "awayTeam"): ("LAST_32", 14),
+    ("QUARTER_FINALS", 0, "homeTeam"): ("LAST_16", 0),
+    ("QUARTER_FINALS", 0, "awayTeam"): ("LAST_16", 1),
+    ("QUARTER_FINALS", 1, "homeTeam"): ("LAST_16", 2),
+    ("QUARTER_FINALS", 1, "awayTeam"): ("LAST_16", 3),
+    ("QUARTER_FINALS", 2, "homeTeam"): ("LAST_16", 4),
+    ("QUARTER_FINALS", 2, "awayTeam"): ("LAST_16", 5),
+    ("QUARTER_FINALS", 3, "homeTeam"): ("LAST_16", 6),
+    ("QUARTER_FINALS", 3, "awayTeam"): ("LAST_16", 7),
+    ("SEMI_FINALS", 0, "homeTeam"): ("QUARTER_FINALS", 0),
+    ("SEMI_FINALS", 0, "awayTeam"): ("QUARTER_FINALS", 1),
+    ("SEMI_FINALS", 1, "homeTeam"): ("QUARTER_FINALS", 2),
+    ("SEMI_FINALS", 1, "awayTeam"): ("QUARTER_FINALS", 3),
+    ("THIRD_PLACE", 0, "homeTeam"): ("SEMI_FINALS", 0),
+    ("THIRD_PLACE", 0, "awayTeam"): ("SEMI_FINALS", 1),
+    ("FINAL", 0, "homeTeam"): ("SEMI_FINALS", 0),
+    ("FINAL", 0, "awayTeam"): ("SEMI_FINALS", 1),
+}
+
 _STAGE_NAMES: Dict[str, str] = {
     "ROUND_OF_32": "Round of 32",
     "ROUND_32": "Round of 32",
@@ -931,10 +969,57 @@ class FootballService:
             return f"{prefix} {group}"
         return "TBD"
 
+    @staticmethod
+    def _resolve_bracket_teams(matches: List[Dict[str, Any]]) -> None:
+        stage_list = ["GROUP_STAGE", "LAST_32", "LAST_16", "QUARTER_FINALS", "SEMI_FINALS", "THIRD_PLACE", "FINAL"]
+
+        sorted_by_stage: Dict[str, List[Dict[str, Any]]] = {}
+        for s in stage_list:
+            ms = [m for m in matches if m.get("stage") == s]
+            ms.sort(key=lambda m: m.get("utcDate", ""))
+            sorted_by_stage[s] = ms
+
+        for stage in stage_list:
+            if stage == "GROUP_STAGE":
+                continue
+            prev_idx = stage_list.index(stage) - 1
+            prev_stage = stage_list[prev_idx]
+            prev_matches = sorted_by_stage.get(prev_stage, [])
+            curr_matches = sorted_by_stage.get(stage, [])
+
+            prev_winners: List[Optional[str]] = []
+            for pm in prev_matches:
+                status = pm.get("status", "")
+                winner = pm.get("score", {}).get("winner")
+                if status == "FINISHED" and winner:
+                    if winner == "HOME_TEAM":
+                        prev_winners.append(pm.get("homeTeam", {}).get("name"))
+                    elif winner == "AWAY_TEAM":
+                        prev_winners.append(pm.get("awayTeam", {}).get("name"))
+                    else:
+                        prev_winners.append(None)
+                else:
+                    prev_winners.append(None)
+
+            for i, cm in enumerate(curr_matches):
+                for side in ("homeTeam", "awayTeam"):
+                    team = cm.get(side, {})
+                    if team.get("name") is not None:
+                        continue
+                    key = (stage, i, side)
+                    feeder = _BRACKET_FEEDERS.get(key)
+                    if not feeder:
+                        continue
+                    _, prev_i = feeder
+                    if prev_i < len(prev_winners) and prev_winners[prev_i] is not None:
+                        team["name"] = prev_winners[prev_i]
+
     def format_bracket(self, data: Dict[str, Any]) -> Optional[str]:
         matches = data.get("matches") or []
         if not matches:
             return None
+
+        self._resolve_bracket_teams(matches)
 
         stages: Dict[str, List[Dict[str, Any]]] = {}
         for m in matches:
