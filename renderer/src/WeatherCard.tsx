@@ -30,8 +30,11 @@ export type WeatherPayload = {
   accentRgb: [number, number, number];
   temperatureC: number;
   temperatureF: number;
+  temperaturePrimaryText?: string;
+  temperatureSecondaryText?: string;
   feelsC: number | null;
   feelsF: number | null;
+  feelsText?: string | null;
   humidity: number | null;
   dewPointText: string | null;
   windText: string | null;
@@ -179,14 +182,16 @@ export function WeatherCard({ payload }: { payload: WeatherPayload }) {
 
                   <div>
                     <div className={`flex items-end gap-4 ${rtl ? "flex-row-reverse" : ""}`}>
-                      <div className="text-[92px] font-black leading-none tracking-[-0.07em]">{Math.round(payload.temperatureC)}°C</div>
+                      <div className="text-[92px] font-black leading-none tracking-[-0.07em]">
+                        {payload.temperaturePrimaryText ?? `${Math.round(payload.temperatureC)}°C`}
+                      </div>
                       <div className="pb-3 text-[46px] font-bold tracking-[-0.05em]" style={{ color: theme.cool }}>
-                        / {Math.round(payload.temperatureF)}°F
+                        / {payload.temperatureSecondaryText ?? `${Math.round(payload.temperatureF)}°F`}
                       </div>
                     </div>
                     {payload.feelsC !== null && payload.feelsF !== null ? (
                       <div className="mt-1.5 text-[20px] font-medium" style={{ color: theme.warm }}>
-                        Feels like {Math.round(payload.feelsC)}°C / {Math.round(payload.feelsF)}°F
+                        Feels like {payload.feelsText ?? `${Math.round(payload.feelsC)}°C / ${Math.round(payload.feelsF)}°F`}
                       </div>
                     ) : null}
                     {payload.observedText ? (
@@ -245,10 +250,10 @@ export function WeatherCard({ payload }: { payload: WeatherPayload }) {
                 <Panel className="rounded-[26px] px-4 py-3.5" theme={theme} strong>
                   <div className={`flex items-center justify-between gap-3 ${rtl ? "flex-row-reverse" : ""}`}>
                     <div className="text-[31px] font-black tracking-[-0.05em]">
-                      {Math.round(payload.temperatureC)}°C
+                      {payload.temperaturePrimaryText ?? `${Math.round(payload.temperatureC)}°C`}
                     </div>
                     <div className="text-[17px] font-bold" style={{ color: theme.cool }}>
-                      {Math.round(payload.temperatureF)}°F
+                      {payload.temperatureSecondaryText ?? `${Math.round(payload.temperatureF)}°F`}
                     </div>
                   </div>
                   <div className="mt-2.5 text-[13px] leading-tight" style={{ color: theme.textDim }}>

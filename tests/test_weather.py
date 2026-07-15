@@ -10,6 +10,9 @@ from convertcord.service import (
     _describe_weather_code,
     _format_aqi,
     _format_daily_forecast,
+    _format_temp_pair_compact,
+    _format_visibility,
+    _format_wind_speed,
     _format_uv_index,
     _load_airport_code_index,
     _weather_color,
@@ -63,8 +66,21 @@ class WeatherFormattingTests(unittest.TestCase):
 
         self.assertIn("AUH", index)
         self.assertEqual(index["AUH"]["display"], "Abu Dhabi (AUH), AE")
+        self.assertEqual(index["AUH"]["country_code"], "AE")
         self.assertAlmostEqual(index["AUH"]["lat"], 24.440966)
         self.assertAlmostEqual(index["AUH"]["lon"], 54.649237)
+
+    def test_weather_unit_system_uses_country_code(self) -> None:
+        weather_service = ConvertService(
+            alias="!weather",
+            measurement_converter=Mock(),
+            temperature_converter=Mock(),
+            currency_converter=Mock(),
+            http_session=Mock(),
+        )
+
+        self.assertEqual(weather_service._weather_unit_system({"country_code": "AE"}), "metric")
+        self.assertEqual(weather_service._weather_unit_system({"country_code": "US"}), "imperial")
 
     def test_handle_returns_user_error_when_weather_raises_conversion_error(self) -> None:
         class FailingWeatherService(ConvertService):
@@ -101,6 +117,16 @@ class WeatherFormattingTests(unittest.TestCase):
     def test_uv_and_aqi_labels_are_human_readable(self) -> None:
         self.assertEqual(_format_uv_index(7.2), "7 High")
         self.assertEqual(_format_aqi(82), "82 Moderate")
+
+    def test_weather_unit_helpers_prioritize_metric_by_default(self) -> None:
+        self.assertEqual(_format_temp_pair_compact(20, "metric"), "20°C / 68°F")
+        self.assertEqual(_format_wind_speed(10, "metric"), "10.0 km/h (6.2 mph)")
+        self.assertEqual(_format_visibility(10000, "metric"), "10 km (6.2 mi)")
+
+    def test_weather_unit_helpers_prioritize_imperial_when_requested(self) -> None:
+        self.assertEqual(_format_temp_pair_compact(20, "imperial"), "68°F / 20°C")
+        self.assertEqual(_format_wind_speed(10, "imperial"), "6.2 mph (10.0 km/h)")
+        self.assertEqual(_format_visibility(10000, "imperial"), "6.2 mi (10.0 km)")
 
 
 if __name__ == "__main__":

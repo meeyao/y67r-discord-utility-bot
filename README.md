@@ -13,6 +13,7 @@ ConvertCord is a lightweight Discord bot focused on quick conversions between me
 ### Weather
 - **Weather lookups** — `!weather <city>` with current conditions + 3-day forecast. Supports airport codes (IATA/ICAO) from the bundled CSV: `!weather LAX`, `!weather AUH 12 hours`, `!weather BOM 3 days`.
 - **Saved weather location** — `!weather set <city>` saves your default location, so `!weather` or `!weather tomorrow` can use it later. Slash users can set this with `/weather-location`.
+- **Local units first** — Weather replies prioritize Celsius/km/h for metric countries and Fahrenheit/mph for common imperial-weather countries.
 - **Image rendering** — Weather forecasts are rendered as styled images via React + Tailwind + Playwright Core (Chromium). Includes custom weather icons.
 
 ### Time, Reminders & Timezones
@@ -100,7 +101,7 @@ export CONVERTCORD_TOKEN="your token"
 python -m convertcord.bot
 ```
 
-The weather image renderer now uses React + Tailwind + Playwright Core with your system Chromium. If Chromium is installed in a non-standard path, set `CHROMIUM_PATH=/path/to/chromium`.
+The weather image renderer uses React + Tailwind + Playwright Core with your system Chromium. It keeps a warm renderer worker after the first request to avoid launching Chromium for every weather reply. If Chromium is installed in a non-standard path, set `CHROMIUM_PATH=/path/to/chromium`.
 
 ## Docker
 A minimal image is included:
