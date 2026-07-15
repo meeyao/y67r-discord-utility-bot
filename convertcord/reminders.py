@@ -39,11 +39,12 @@ class ReminderManager:
                 )
             """)
             
-            # Table for user settings (timezones)
+            # Table for user settings
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id INTEGER PRIMARY KEY,
                     timezone TEXT NOT NULL,
+                    weather_location TEXT,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -57,6 +58,12 @@ class ReminderManager:
             # Migration: add author_id if missing
             try:
                 conn.execute("ALTER TABLE reminders ADD COLUMN author_id INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
+            # Migration: add weather_location if missing
+            try:
+                conn.execute("ALTER TABLE user_settings ADD COLUMN weather_location TEXT")
             except sqlite3.OperationalError:
                 pass
             
@@ -79,6 +86,25 @@ class ReminderManager:
                 cursor = conn.execute("SELECT timezone FROM user_settings WHERE user_id = ?", (user_id,))
                 row = cursor.fetchone()
                 return row[0] if row else None
+        return await asyncio.to_thread(_get)
+
+    async def set_user_weather_location(self, user_id: int, location: str):
+        def _set():
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT INTO user_settings (user_id, timezone, weather_location, updated_at) VALUES (?, '', ?, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(user_id) DO UPDATE SET weather_location=excluded.weather_location, updated_at=CURRENT_TIMESTAMP",
+                    (user_id, location)
+                )
+                conn.commit()
+        await asyncio.to_thread(_set)
+
+    async def get_user_weather_location(self, user_id: int) -> Optional[str]:
+        def _get():
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT weather_location FROM user_settings WHERE user_id = ?", (user_id,))
+                row = cursor.fetchone()
+                return row[0] if row and row[0] else None
         return await asyncio.to_thread(_get)
 
     async def add_reminder(self, target_id: int, target_type: str, guild_id: int, channel_id: int, author_id: int, content: str, reminder_type: str = 'one-time', scheduled_time: str = None):

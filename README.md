@@ -12,6 +12,7 @@ ConvertCord is a lightweight Discord bot focused on quick conversions between me
 
 ### Weather
 - **Weather lookups** — `!weather <city>` with current conditions + 3-day forecast. Supports airport codes (IATA/ICAO) from the bundled CSV: `!weather LAX`, `!weather AUH 12 hours`, `!weather BOM 3 days`.
+- **Saved weather location** — `!weather set <city>` saves your default location, so `!weather` or `!weather tomorrow` can use it later. Slash users can set this with `/weather-location`.
 - **Image rendering** — Weather forecasts are rendered as styled images via React + Tailwind + Playwright Core (Chromium). Includes custom weather icons.
 
 ### Time, Reminders & Timezones
@@ -56,7 +57,7 @@ ConvertCord is a lightweight Discord bot focused on quick conversions between me
 - Media file links (images, videos, audio) and Discord system domains are excluded from detection.
 
 ### Additional
-- **Slash commands** — all major features available as `/convert`, `/weather`, `/time`, `/roll`, `/conch`, `/urban`, `/temps`, `/football`, `/ppv`, `/ufc`, `/gta`, `/remind`, `/daily-remind`, `/reminders-list`, `/reminders-delete`, `/timezone`, `/sanitize-status`, `/sanitize-toggle`.
+- **Slash commands** — all major features available as `/convert`, `/weather`, `/weather-location`, `/time`, `/roll`, `/conch`, `/urban`, `/temps`, `/football`, `/ppv`, `/ufc`, `/gta`, `/remind`, `/daily-remind`, `/reminders-list`, `/reminders-delete`, `/timezone`, `/sanitize-status`, `/sanitize-toggle`.
 - **Configurable trigger alias** — Default `$convert`, change via config or `CONVERTCORD_ALIAS` env var.
 - **Channel / Guild allowlists** — Optional safety rails; leave empty to allow everywhere.
 - **Runtime slash sync** — `!sync` instantly registers slash commands in the current guild.
@@ -142,7 +143,9 @@ $currency 100 usd eur
 !roll 20
 !conch should I sleep?
 !time london
+!weather set austin
 !weather austin
+!weather
 !football live
 !football standings
 !football team Argentina

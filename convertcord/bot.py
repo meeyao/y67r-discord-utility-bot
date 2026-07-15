@@ -202,6 +202,11 @@ class _ConvertClient(discord.Client):
             await self._handle_prefix_timezone(message, alias_used, remainder[len(self.CMD_TIMEZONE):].strip())
             return
 
+        # Weather defaults need the Discord user id, so route weather aliases here.
+        if self.service._alias_hint(alias_used) == "weather":
+            await self._handle_prefix_weather(message, alias_used, remainder.strip())
+            return
+
         # Handle reminder commands via prefix
         if lower_remainder.startswith(self.CMD_REMIND + " ") or lower_remainder == self.CMD_REMIND:
             await self._handle_prefix_remind(message, alias_used, remainder[len(self.CMD_REMIND):].strip())
@@ -283,6 +288,45 @@ class _ConvertClient(discord.Client):
             return
         
         await self._set_timezone_logic(message, message.author, body)
+
+    async def _handle_prefix_weather(self, message: discord.Message, alias: str, body: str) -> None:
+        lower_body = body.lower()
+        if lower_body in {"set", "location"}:
+            current = await self.reminder_manager.get_user_weather_location(message.author.id)
+            if current:
+                await message.reply(f"Your weather location is set to **{current}**. Use `{alias}set <location>` to change it.", mention_author=False)
+            else:
+                await message.reply(f"Use `{alias}set <location>` to save a default weather location.", mention_author=False)
+            return
+
+        if lower_body.startswith("set "):
+            await self._set_weather_location_logic(message, message.author, body[4:].strip())
+            return
+        if lower_body.startswith("location "):
+            await self._set_weather_location_logic(message, message.author, body[9:].strip())
+            return
+
+        query = await self._weather_query_for_user(message.author.id, body)
+        if query is None:
+            await message.reply(f"Tell me a location, or save one first with `{alias}set <location>`.", mention_author=False)
+            return
+
+        try:
+            response = await self.service.handle(query, invoked_alias=alias)
+            if response is None:
+                return
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logging.exception("Weather prefix command failed: %s", exc)
+            await message.reply("Sorry, weather lookup failed. Try again later.", mention_author=False)
+            return
+
+        embed = None if response.attachments else response.embed
+        await message.reply(
+            response.content or None,
+            mention_author=False,
+            embed=embed,
+            files=[discord.File(io.BytesIO(data), filename=name) for name, data in response.attachments],
+        )
 
     async def _handle_prefix_remind(self, message: discord.Message, alias: str, body: str) -> None:
         if not message.mentions and not message.role_mentions:
@@ -531,8 +575,6 @@ class _ConvertClient(discord.Client):
         return ppv.format_stream(stream, api_domain, source=source)
 
     async def _execute_ppv(self, subcommand: str, args: str) -> str:
-        ppv = self.ppv_service
-
         if subcommand in {"help", "?"}:
             available = ", ".join(EMBED_BROADCASTERS)
             return (
@@ -546,147 +588,40 @@ class _ConvertClient(discord.Client):
         if subcommand == "streamed":
             return await self._execute_streamed("streamed", args)
 
-        # Resolve the source query
+        footy_link = "<https://footy.forsen.lol>"
         source = args if subcommand == "watch" else subcommand
 
-        # Try to get the current match URI from ppv.st for embedindia.st links
-        ppv_result = await ppv.find_next_wc_stream()
-        match_uri = ""
-        match_name = ""
-        starts_at = 0
-        if ppv_result:
-            stream, _ = ppv_result
-            match_uri = stream.get("uri_name", "")
-            match_name = stream.get("name", "")
-            starts_at = stream.get("starts_at", 0)
-
-        # Suppress footy.forsen.lol embed preview
-        footy_link = "<https://footy.forsen.lol>"
-
-        # Source shortcut — prefer direct embedindia.st link
         if source:
-            # Check if it's a known broadcaster
             broadcaster = next((k for k in EMBED_BROADCASTERS if source in k or k in source), None)
             if broadcaster:
                 flag = EMBED_BROADCASTERS[broadcaster]
-                ts = f" <t:{starts_at}:R>" if starts_at else ""
-                # Channel shortcut from JUNKIE_CHANNELS (junkieembeds)
                 jj_match = next((k for k in JUNKIE_CHANNELS if source in k or k in source), None)
                 if jj_match:
                     flag = JUNKIE_FLAGS.get(jj_match, flag)
                     hash_val = JUNKIE_CHANNELS[jj_match]
-                    return f"{footy_link}\n{flag} <https://footy.forsen.lol/#{hash_val}>{ts}"
-                if match_uri:
-                    return f"{footy_link}\n{flag} <https://embedindia.st/embed/{match_uri}/{broadcaster}>{ts}"
-                return f"{footy_link}\n{flag} <https://footy.forsen.lol/#{broadcaster}>{ts}"
-
-            # Non-channel source: show match info
-            if match_name:
-                ts = f" <t:{starts_at}:R>" if starts_at else ""
-                return f"{footy_link}\n**{match_name}**{ts}"
-
-        # watch/stream with no source — show all broadcasters
-        if match_uri:
-            ts = f" <t:{starts_at}:R>" if starts_at else ""
-            lines = [footy_link]
-            if match_name:
-                lines.append(f"**{match_name}**{ts}")
-            lines.append(f"🇬🇧 <https://embedindia.st/embed/{match_uri}>")
-            lines.extend(
-                f"{flag} <https://embedindia.st/embed/{match_uri}/{b}>"
-                for b, flag in EMBED_BROADCASTERS.items()
-            )
-            lines.append("🇺🇸 <https://footy.forsen.lol/#fox-sports-1>")
-            return "\n".join(l for l in lines if l)
+                    return f"{footy_link}\n{flag} <https://footy.forsen.lol/#{hash_val}>"
+                return f"{footy_link}\n{flag} <https://footy.forsen.lol/#{broadcaster}>"
 
         return footy_link
 
     async def _execute_streamed(self, subcommand: str = "", args: str = "") -> str:
-        if not self.streamed_service:
-            return "No upcoming World Cup streams found."
-        sm_result = await self.streamed_service.find_next_wc_match()
-        if not sm_result:
-            return "No upcoming World Cup streams found on streamed.su."
-        match, streamed_domain = sm_result
-        streams = await self.streamed_service.get_admin_streams(match, streamed_domain)
-        if not streams:
-            return "No upcoming World Cup streams found on streamed.su."
-
-        show_all = (subcommand in ("stream", "streamed") and not args)
-        if show_all:
-            return StreamedService.format_match(match, streams, "all")
-
-        source = args if subcommand in ("watch", "stream", "streamed") else (subcommand or args)
-        if source:
-            return StreamedService.format_match(match, streams, source)
-        return StreamedService.format_match(match, streams)
+        return "<https://footy.forsen.lol>"
 
     async def _execute_combined_stream(self, args: str = "") -> str:
-        ppv = self.ppv_service
-        ppv_result = await ppv.find_next_wc_stream()
-        match_uri = ""
-        match_name = ""
-        starts_at = 0
-        if ppv_result:
-            stream, _ = ppv_result
-            match_uri = stream.get("uri_name", "")
-            match_name = stream.get("name", "")
-            starts_at = stream.get("starts_at", 0)
-
-        streamed_result = None
-        streamed_text = ""
-        if self.streamed_service:
-            sm_result = await self.streamed_service.find_next_wc_match()
-            if sm_result:
-                smatch, sdomain = sm_result
-                sstreams = await self.streamed_service.get_admin_streams(smatch, sdomain)
-                if sstreams:
-                    streamed_result = (smatch, sstreams)
-                    streamed_text = StreamedService.format_match(smatch, sstreams, "all")
+        footy_link = "<https://footy.forsen.lol>"
 
         if args:
             broadcaster = next((k for k in EMBED_BROADCASTERS if args in k or k in args), None)
             if broadcaster:
                 flag = EMBED_BROADCASTERS[broadcaster]
-                ts = f" <t:{starts_at}:R>" if starts_at else ""
                 jj_match = next((k for k in JUNKIE_CHANNELS if args in k or k in args), None)
                 if jj_match:
                     flag = JUNKIE_FLAGS.get(jj_match, flag)
                     hash_val = JUNKIE_CHANNELS[jj_match]
-                    return f"<https://footy.forsen.lol>\n{flag} <https://footy.forsen.lol/#{hash_val}>{ts}"
-                if match_uri:
-                    return f"<https://footy.forsen.lol>\n{flag} <https://embedindia.st/embed/{match_uri}/{broadcaster}>{ts}"
-                return f"<https://footy.forsen.lol>\n{flag} <https://footy.forsen.lol/#{broadcaster}>{ts}"
+                    return f"{footy_link}\n{flag} <https://footy.forsen.lol/#{hash_val}>"
+                return f"{footy_link}\n{flag} <https://footy.forsen.lol/#{broadcaster}>"
 
-            if match_name:
-                ts = f" <t:{starts_at}:R>" if starts_at else ""
-                return f"<https://footy.forsen.lol>\n**{match_name}**{ts}"
-
-        footy_link = "<https://footy.forsen.lol>"
-        lines = [footy_link]
-
-        if match_name:
-            ts = f" <t:{starts_at}:R>" if starts_at else ""
-            lines.append(f"**{match_name}**{ts}")
-
-        if match_uri:
-            lines.append("")
-            lines.append("**embedindia.st**")
-            lines.append(f"🇬🇧 <https://embedindia.st/embed/{match_uri}>")
-            lines.extend(
-                f"{flag} <https://embedindia.st/embed/{match_uri}/{b}>"
-                for b, flag in EMBED_BROADCASTERS.items()
-            )
-            lines.append("🇺🇸 <https://footy.forsen.lol/#fox-sports-1>")
-
-        if streamed_text:
-            lines.append("")
-            lines.append("**Streamed**")
-            st_lines = streamed_text.split("\n")
-            st_start = 1 if st_lines and st_lines[0].startswith("**Streamed") else 0
-            lines.extend(l for l in st_lines[st_start:] if l)
-
-        return "\n".join(l for l in lines if l)
+        return footy_link
 
     async def _handle_prefix_football(self, message: discord.Message, query: str) -> None:
         parts = query.strip().split(maxsplit=1)
@@ -1223,6 +1158,13 @@ class _ConvertClient(discord.Client):
             else:
                 await interaction.response.send_message(error_message, ephemeral=True)
 
+    async def _handle_slash_weather(self, interaction: discord.Interaction, location: Optional[str]) -> None:
+        query = await self._weather_query_for_user(interaction.user.id, (location or "").strip())
+        if query is None:
+            await interaction.response.send_message("Tell me a location, or save one first with `/weather-location`.", ephemeral=True)
+            return
+        await self._handle_slash_command(interaction, query, "weather")
+
     async def _set_timezone_logic(self, context_obj: discord.Message | discord.Interaction, user: discord.User | discord.Member, location_query: str):
         # We leverage the existing ConvertService to resolve location -> timezone
         location = await self.service._resolve_location(location_query)
@@ -1249,6 +1191,46 @@ class _ConvertClient(discord.Client):
             await context_obj.response.send_message(msg, ephemeral=True)
         else:
             await context_obj.reply(msg, mention_author=False)
+
+    async def _set_weather_location_logic(self, context_obj: discord.Message | discord.Interaction, user: discord.User | discord.Member, location_query: str):
+        location_query = location_query.strip()
+        if not location_query:
+            msg = "Please provide a location, like `London`, `New York`, or `AUH`."
+            if isinstance(context_obj, discord.Interaction):
+                await context_obj.response.send_message(msg, ephemeral=True)
+            else:
+                await context_obj.reply(msg, mention_author=False)
+            return
+
+        location = await self.service._resolve_location(location_query)
+        if not location:
+            msg = f"I couldn't find weather for '{location_query}'. Try a city name or airport code."
+            if isinstance(context_obj, discord.Interaction):
+                await context_obj.response.send_message(msg, ephemeral=True)
+            else:
+                await context_obj.reply(msg, mention_author=False)
+            return
+
+        await self.reminder_manager.set_user_weather_location(user.id, location_query)
+        msg = f"Weather location set to **{location['display']}**."
+        if isinstance(context_obj, discord.Interaction):
+            await context_obj.response.send_message(msg, ephemeral=True)
+        else:
+            await context_obj.reply(msg, mention_author=False)
+
+    async def _weather_query_for_user(self, user_id: int, query: str) -> Optional[str]:
+        query = query.strip()
+        if query:
+            location, _ = self.service._parse_weather_request(self.service._tokenize(query))
+            if location:
+                return query
+
+        saved_location = await self.reminder_manager.get_user_weather_location(user_id)
+        if not saved_location:
+            return None
+        if query:
+            return f"{saved_location} {query}"
+        return saved_location
 
     async def _add_reminder_logic(self, author, target_id, target_type, target_display, text, guild_id, channel_id, reminder_type='one-time', scheduled_time=None):
         from_user = author.display_name or str(author)
@@ -1408,9 +1390,22 @@ class _ConvertClient(discord.Client):
             await self._handle_slash_command(interaction, query)
 
         @self.tree.command(name="weather", description="Check the weather for a location.")
-        @app_commands.describe(location="The location to check weather for.")
-        async def slash_weather(interaction: discord.Interaction, location: str) -> None:
-            await self._handle_slash_command(interaction, location, "weather")
+        @app_commands.describe(location="The location to check weather for. Uses your saved location when omitted.")
+        async def slash_weather(interaction: discord.Interaction, location: Optional[str] = None) -> None:
+            await self._handle_slash_weather(interaction, location)
+
+        @self.tree.command(name="weather-location", description="Set your default location for weather.")
+        @app_commands.describe(location="Your city or airport code, e.g. London, New York, AUH.")
+        async def slash_weather_location(interaction: discord.Interaction, location: Optional[str] = None) -> None:
+            if location:
+                await self._set_weather_location_logic(interaction, interaction.user, location)
+                return
+
+            current = await self.reminder_manager.get_user_weather_location(interaction.user.id)
+            if current:
+                await interaction.response.send_message(f"Your weather location is set to **{current}**.", ephemeral=True)
+            else:
+                await interaction.response.send_message("You haven't set a weather location yet. Use `/weather-location location:<place>`.", ephemeral=True)
 
         @self.tree.command(name="roll", description="Roll some dice, e.g. '2d6'.")
         @app_commands.describe(dice="The dice to roll, e.g. '2d6'. Defaults to 1d100 if empty.")

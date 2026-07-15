@@ -662,14 +662,38 @@ class FootballService:
             return None
         live_statuses = {"IN_PLAY", "PAUSED", "LIVE"}
         live = []
+        now = datetime.now(timezone.utc)
         for m in (data.get("matches") or []):
-            if m.get("status") in live_statuses:
+            status = m.get("status")
+            if status in live_statuses:
                 match_id = m.get("id")
                 if match_id:
                     details = await self.get_match_details(match_id)
                     if details:
                         m = details
                 live.append(m)
+                continue
+            if status == "TIMED":
+                utc_str = m.get("utcDate")
+                if utc_str:
+                    try:
+                        dt = datetime.fromisoformat(utc_str.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        continue
+                    if dt <= now:
+                        sc = m.get("score") or {}
+                        has_score = any(
+                            v is not None
+                            for key in ("halfTime", "fullTime")
+                            for v in (sc.get(key) or {}).values()
+                        )
+                        if has_score:
+                            match_id = m.get("id")
+                            if match_id:
+                                details = await self.get_match_details(match_id)
+                                if details:
+                                    m = details
+                            live.append(m)
         return live if live else None
 
     async def get_live_scores(self) -> Optional[List[Dict[str, Any]]]:
@@ -997,18 +1021,25 @@ class FootballService:
             curr_matches = sorted_by_stage.get(stage, [])
 
             prev_winners: List[Optional[str]] = []
+            prev_losers: List[Optional[str]] = []
             for pm in prev_matches:
                 status = pm.get("status", "")
                 winner = pm.get("score", {}).get("winner")
                 if status == "FINISHED" and winner:
+                    home_name = pm.get("homeTeam", {}).get("name")
+                    away_name = pm.get("awayTeam", {}).get("name")
                     if winner == "HOME_TEAM":
-                        prev_winners.append(pm.get("homeTeam", {}).get("name"))
+                        prev_winners.append(home_name)
+                        prev_losers.append(away_name)
                     elif winner == "AWAY_TEAM":
-                        prev_winners.append(pm.get("awayTeam", {}).get("name"))
+                        prev_winners.append(away_name)
+                        prev_losers.append(home_name)
                     else:
                         prev_winners.append(None)
+                        prev_losers.append(None)
                 else:
                     prev_winners.append(None)
+                    prev_losers.append(None)
 
             for i, cm in enumerate(curr_matches):
                 for side in ("homeTeam", "awayTeam"):
@@ -1020,8 +1051,10 @@ class FootballService:
                     if not feeder:
                         continue
                     _, prev_i = feeder
-                    if prev_i < len(prev_winners) and prev_winners[prev_i] is not None:
-                        team["name"] = prev_winners[prev_i]
+                    use_losers = stage == "THIRD_PLACE"
+                    source = prev_losers if use_losers else prev_winners
+                    if prev_i < len(source) and source[prev_i] is not None:
+                        team["name"] = source[prev_i]
 
     def format_bracket(self, data: Dict[str, Any]) -> Optional[str]:
         matches = data.get("matches") or []
