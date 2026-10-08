@@ -45,11 +45,18 @@ class SanitizeSettings:
 
 
 @dataclass
+class BlacklistSettings:
+    instagram_user_ids: List[int] = field(default_factory=list)
+    instagram_domains: List[str] = field(default_factory=list)
+
+
+@dataclass
 class AppConfig:
     discord: DiscordSettings = field(default_factory=DiscordSettings)
     currency: CurrencySettings = field(default_factory=CurrencySettings)
     football: FootballSettings = field(default_factory=FootballSettings)
     sanitize: SanitizeSettings = field(default_factory=SanitizeSettings)
+    blacklist: BlacklistSettings = field(default_factory=BlacklistSettings)
 
 
 def _coerce_int_list(raw_value) -> List[int]:
@@ -74,6 +81,7 @@ def load_config(path: Optional[str]) -> AppConfig:
     currency_raw = raw.get("currency", {}) or {}
     football_raw = raw.get("football", {}) or {}
     sanitize_raw = raw.get("sanitize", {}) or {}
+    blacklist_raw = raw.get("blacklist", {}) or {}
     discord_defaults = DiscordSettings()
     currency_defaults = CurrencySettings()
     football_defaults = FootballSettings()
@@ -110,7 +118,30 @@ def load_config(path: Optional[str]) -> AppConfig:
         detect_dupes=bool(sanitize_raw.get("detect_dupes", sanitize_defaults.detect_dupes)),
     )
 
-    return AppConfig(discord=discord, currency=currency, football=football, sanitize=sanitize)
+    blacklist_env = os.environ.get("CONVERTCORD_BLACKLIST_INSTAGRAM_USER_IDS")
+    if blacklist_env:
+        instagram_blacklist_raw = [item.strip() for item in blacklist_env.split(",") if item.strip()]
+    else:
+        instagram_blacklist_raw = blacklist_raw.get("instagram_user_ids")
+
+    domains_env = os.environ.get("CONVERTCORD_BLACKLIST_INSTAGRAM_DOMAINS")
+    if domains_env:
+        instagram_domains_raw = [item.strip() for item in domains_env.split(",") if item.strip()]
+    else:
+        instagram_domains_raw = blacklist_raw.get("instagram_domains") or []
+
+    blacklist = BlacklistSettings(
+        instagram_user_ids=_coerce_int_list(instagram_blacklist_raw),
+        instagram_domains=[str(item).strip().lower() for item in instagram_domains_raw if str(item).strip()],
+    )
+
+    return AppConfig(
+        discord=discord,
+        currency=currency,
+        football=football,
+        sanitize=sanitize,
+        blacklist=blacklist,
+    )
 
 
 def update_sanitize_config(
@@ -201,6 +232,7 @@ def resolve_token(config: AppConfig) -> str:
 
 __all__ = [
     "AppConfig",
+    "BlacklistSettings",
     "CurrencySettings",
     "DiscordSettings",
     "SanitizeSettings",

@@ -30,6 +30,44 @@ class ConfigTests(unittest.TestCase):
             self.assertFalse(config.sanitize.twitch)
             self.assertTrue(config.sanitize.twitter)
 
+    def test_load_blacklist_user_ids(self) -> None:
+        with tempfile.NamedTemporaryFile("w+", suffix=".yaml") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """
+                    discord:
+                      alias: "$convert"
+                    blacklist:
+                      instagram_user_ids:
+                        - 529128711258374144
+                    """
+                ).strip()
+            )
+            handle.flush()
+
+            config = load_config(handle.name)
+
+            self.assertEqual(config.blacklist.instagram_user_ids, [529128711258374144])
+
+    def test_load_blacklist_instagram_domains(self) -> None:
+        with tempfile.NamedTemporaryFile("w+", suffix=".yaml") as handle:
+            handle.write(
+                textwrap.dedent(
+                    """
+                    discord:
+                      alias: "$convert"
+                    blacklist:
+                      instagram_domains:
+                        - Example-Short.xyz
+                    """
+                ).strip()
+            )
+            handle.flush()
+
+            config = load_config(handle.name)
+
+            self.assertEqual(config.blacklist.instagram_domains, ["example-short.xyz"])
+
 
 if __name__ == "__main__":
     unittest.main()

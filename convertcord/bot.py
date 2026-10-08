@@ -17,7 +17,7 @@ from discord.ext import tasks
 from .config import AppConfig, load_config, resolve_aliases, resolve_token, update_sanitize_config
 from .conversions import MeasurementConverter, TemperatureConverter
 from .currency import CurrencyConverter
-from .dupes import DupeChecker
+from .dupes import URL_RE, DupeChecker
 from .football import FootballService, _fmt_rel_ts, _fmt_ts, _get_flag
 from .ppv import PpvService
 from .reminders import ReminderManager
@@ -36,7 +36,14 @@ JUNKIE_FLAGS: Dict[str, str] = {
     "fox": "🇺🇸",
 }
 
-from .sanitize import SanitizePlatforms, contains_url, extract_and_sanitize
+from .sanitize import (
+    LinkBlacklist,
+    SanitizePlatforms,
+    contains_instagram_link,
+    contains_url,
+    extract_and_sanitize,
+    mentions_instagram,
+)
 from .service import ConvertService
 
 
@@ -48,6 +55,7 @@ def build_client(
     allowed_guild_ids: Sequence[int],
     config_path: str,
     sanitize_platforms: SanitizePlatforms,
+    link_blacklist: Optional[LinkBlacklist] = None,
     football_service: Optional[FootballService] = None,
     ppv_service: Optional[PpvService] = None,
     streamed_service: Optional[StreamedService] = None,
@@ -60,6 +68,7 @@ def build_client(
         allowed_guild_ids,
         config_path,
         sanitize_platforms,
+        link_blacklist,
         football_service,
         ppv_service,
         streamed_service,
@@ -83,6 +92,7 @@ class _ConvertClient(discord.Client):
         allowed_guild_ids: Sequence[int],
         config_path: str,
         sanitize_platforms: SanitizePlatforms,
+        link_blacklist: Optional[LinkBlacklist] = None,
         football_service: Optional[FootballService] = None,
         ppv_service: Optional[PpvService] = None,
         streamed_service: Optional[StreamedService] = None,
@@ -112,6 +122,8 @@ class _ConvertClient(discord.Client):
         self.allowed_guilds: Set[int] = {int(gid) for gid in allowed_guild_ids if gid}
         self.config_path = config_path
         self.sanitize_platforms = sanitize_platforms
+        self.link_blacklist = link_blacklist or LinkBlacklist()
+        self._blacklist_recheck_tasks: Set[asyncio.Task] = set()
         self.reminder_manager = ReminderManager()
         self.dupe_checker = DupeChecker()
         self._commands_synced = False
@@ -149,9 +161,15 @@ class _ConvertClient(discord.Client):
         if self.allowed_channels and message.channel.id not in self.allowed_channels:
             return
 
-        await self._deliver_reminders(message)
-
         content = message.content.strip()
+
+        if await self._delete_if_blacklisted_instagram(message):
+            return
+
+        if self._should_recheck_blacklisted(message):
+            self._schedule_blacklist_recheck(message)
+
+        await self._deliver_reminders(message)
 
         # Check for duplicate links
         is_dupe = False
@@ -278,6 +296,76 @@ class _ConvertClient(discord.Client):
         )
         for extra_message in response.extra_messages:
             await message.channel.send(extra_message)
+
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        if after.author.bot:
+            return
+        if after.guild and self.allowed_guilds and after.guild.id not in self.allowed_guilds:
+            return
+        if self.allowed_channels and after.channel.id not in self.allowed_channels:
+            return
+        await self._delete_if_blacklisted_instagram(after)
+
+    def _message_is_instagram(self, message: discord.Message) -> bool:
+        if contains_instagram_link(message.content, self.link_blacklist.instagram_domains):
+            return True
+        return any(self._embed_is_instagram(embed) for embed in message.embeds)
+
+    @staticmethod
+    def _embed_is_instagram(embed: discord.Embed) -> bool:
+        candidates: List[Optional[str]] = [embed.url, embed.title, embed.description]
+        if embed.author:
+            candidates.append(embed.author.name)
+        if embed.provider:
+            candidates.append(embed.provider.name)
+        if embed.footer:
+            candidates.append(embed.footer.text)
+        if embed.image:
+            candidates.append(embed.image.url)
+        if embed.thumbnail:
+            candidates.append(embed.thumbnail.url)
+        return any(mentions_instagram(value) for value in candidates)
+
+    async def _delete_if_blacklisted_instagram(self, message: discord.Message) -> bool:
+        if not self.link_blacklist.is_blacklisted(message.author.id):
+            return False
+        if not self._message_is_instagram(message):
+            return False
+        try:
+            await message.delete()
+            logging.info("Deleted blacklisted Instagram link from %s", message.author.id)
+        except discord.HTTPException:
+            logging.warning("Failed to delete blacklisted Instagram link from %s", message.author.id)
+        return True
+
+    def _should_recheck_blacklisted(self, message: discord.Message) -> bool:
+        """Blacklisted authors posting any link may have used an unknown
+        shortener whose embed only resolves after the message is sent."""
+        if not self.link_blacklist.is_blacklisted(message.author.id):
+            return False
+        return bool(URL_RE.search(message.content))
+
+    def _schedule_blacklist_recheck(self, message: discord.Message) -> None:
+        task = asyncio.create_task(self._recheck_blacklisted(message))
+        self._blacklist_recheck_tasks.add(task)
+        task.add_done_callback(self._blacklist_recheck_tasks.discard)
+
+    async def _recheck_blacklisted(self, message: discord.Message) -> None:
+        try:
+            await asyncio.sleep(2.5)
+            current: Optional[discord.Message] = message
+            try:
+                current = await message.channel.fetch_message(message.id)
+            except discord.NotFound:
+                return
+            except discord.HTTPException:
+                pass
+            if current is not None:
+                await self._delete_if_blacklisted_instagram(current)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Blacklist recheck failed for message %s", message.id)
 
     async def _handle_prefix_timezone(self, message: discord.Message, alias: str, body: str) -> None:
         if not body:
@@ -1679,6 +1767,10 @@ async def run_bot() -> None:
                 twitch=config.sanitize.twitch,
                 twitter=config.sanitize.twitter,
                 detect_dupes=config.sanitize.detect_dupes,
+            ),
+            link_blacklist=LinkBlacklist(
+                instagram_user_ids=frozenset(config.blacklist.instagram_user_ids),
+                instagram_domains=frozenset(config.blacklist.instagram_domains),
             ),
             football_service=football_service,
             ppv_service=ppv_service,

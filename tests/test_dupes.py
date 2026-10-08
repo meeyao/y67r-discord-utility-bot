@@ -39,7 +39,7 @@ class DupeTests(unittest.IsolatedAsyncioTestCase):
             ("https://www.instagram.com/p/ABC/", "https://instagram.com/p/abc"),
             ("https://instagram.com/p/ABC/?igsh=1", "https://instagram.com/p/abc"),
             ("https://vxinstagram.com/p/ABC/", "https://instagram.com/p/abc"),
-            ("https://kkinstagram.com/p/ABC/", "https://instagram.com/p/abc"),
+            ("https://oginstagram.com/p/ABC/", "https://instagram.com/p/abc"),
             ("https://www.reddit.com/r/test", "https://reddit.com/r/test"),
             ("https://old.reddit.com/r/test", "https://reddit.com/r/test"),
             ("https://new.reddit.com/r/test", "https://reddit.com/r/test"),
@@ -219,7 +219,7 @@ class DupeTests(unittest.IsolatedAsyncioTestCase):
             await self.checker.check_and_add(
                 guild_id, channel_id,
                 msg_id2,
-                "https://kkinstagram.com/p/ABC/",
+                "https://oginstagram.com/p/ABC/",
             ),
             (channel_id, msg_id1),
         )

@@ -1,7 +1,7 @@
 import re
 import aiohttp
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 INSTAGRAM_RE = re.compile(r"(?i)https?://(?:www\.)?instagram\.com/(?P<type>reels?|p)(?P<data>/[^?\s)\]`|]+)")
 REDDIT_RE = re.compile(r"(?i)https?://(?P<subdomain>(?:www\.|old\.)?)reddit\.com/(?P<subreddit>r/[^/]+)(?P<data>/[^?\s)\]`|]*)?")
@@ -9,6 +9,39 @@ REDDIT_RE = re.compile(r"(?i)https?://(?P<subdomain>(?:www\.|old\.)?)reddit\.com
 TIKTOK_RE = re.compile(r"(?i)https?://(?P<subdomain>(?:\w{1,3}\.)?)(?P<domain>tiktok\.com)(?P<data>/[^?\s)\]`|]*)")
 TWITCH_RE = re.compile(r"(?i)https?://(?:www\.)?(?:twitch\.tv/(?P<username>\w+)/clip/|clips\.twitch\.tv/)(?P<data>[^?\s)\]`|]+)")
 TWITTER_RE = re.compile(r"(?i)https?://(?:www\.)?(?:twitter|x)\.com/(?P<username>\w+)(?P<data>/status/[^?\s)\]`|]*)")
+
+# Instagram itself plus all known embed-rewriter mirrors and share shorteners.
+# Any link to one of these hosts counts as an Instagram link for blacklist
+# purposes.
+INSTAGRAM_MIRROR_DOMAINS = (
+    "instagram.com",
+    "instagr.am",
+    "oginstagram.com",
+    "kkinstagram.com",
+    "vxinstagram.com",
+    "ddinstagram.com",
+    "instagramez.com",
+    "ig.me",
+    "flyn.im",
+)
+
+# Textual hints that show up in the embed preview Discord generates for an
+# Instagram link, even when the URL itself is a shortener we don't know about.
+INSTAGRAM_TEXT_HINTS = ("instagram", "instagr.am", "ig.me")
+
+
+def contains_instagram_link(content: str, extra_domains: Iterable[str] = ()) -> bool:
+    lower = content.lower()
+    domains = (*INSTAGRAM_MIRROR_DOMAINS, *extra_domains)
+    return any(domain.lower() in lower for domain in domains if domain)
+
+
+def mentions_instagram(text: Optional[str]) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    return any(hint in lower for hint in INSTAGRAM_TEXT_HINTS)
+
 
 @dataclass(frozen=True)
 class SanitizePlatforms:
@@ -18,6 +51,20 @@ class SanitizePlatforms:
     twitch: bool = True
     twitter: bool = True
     detect_dupes: bool = True
+
+
+@dataclass(frozen=True)
+class LinkBlacklist:
+    instagram_user_ids: frozenset[int] = frozenset()
+    instagram_domains: frozenset[str] = frozenset()
+
+    def is_blacklisted(self, author_id: int) -> bool:
+        return author_id in self.instagram_user_ids
+
+    def blocks_instagram(self, author_id: int, content: str) -> bool:
+        return self.is_blacklisted(author_id) and contains_instagram_link(
+            content, self.instagram_domains
+        )
 
 def _is_spoiler(content: str, match_start: int, match_end: int) -> bool:
     pre_url = content[:match_start]
@@ -89,7 +136,7 @@ async def extract_and_sanitize(
         for match in INSTAGRAM_RE.finditer(content):
             ptype = match.group("type")
             data = match.group("data")
-            clean_url = f"https://www.kkinstagram.com/{ptype}{data}"
+            clean_url = f"https://www.oginstagram.com/{ptype}{data}"
             
             label = "Reel" if ptype.lower().startswith("reel") else "Post"
             results.append(_format_output(content, match, clean_url, "Instagram", label))

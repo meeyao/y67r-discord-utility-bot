@@ -1,6 +1,13 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock
-from convertcord.sanitize import SanitizePlatforms, contains_url, extract_and_sanitize
+from convertcord.sanitize import (
+    LinkBlacklist,
+    SanitizePlatforms,
+    contains_instagram_link,
+    contains_url,
+    extract_and_sanitize,
+    mentions_instagram,
+)
 
 class AsyncContextManagerMock:
     def __init__(self, return_value):
@@ -93,8 +100,64 @@ class SanitizeTests(unittest.IsolatedAsyncioTestCase):
         results = await extract_and_sanitize("https://www.instagram.com/reels/XYZ/", self.session)
         self.assertEqual(
             results,
-            ["[Reel via Instagram](https://www.kkinstagram.com/reels/XYZ/)"],
+            ["[Reel via Instagram](https://www.oginstagram.com/reels/XYZ/)"],
         )
+
+class LinkBlacklistTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.blacklist = LinkBlacklist(instagram_user_ids=frozenset({529128711258374144}))
+
+    def test_blacklisted_user_instagram_link_is_blocked(self) -> None:
+        self.assertTrue(
+            self.blacklist.blocks_instagram(
+                529128711258374144, "https://www.instagram.com/reels/XYZ/"
+            )
+        )
+
+    def test_blacklisted_user_mirror_links_are_blocked(self) -> None:
+        for url in (
+            "https://www.oginstagram.com/reels/XYZ/",
+            "https://kkinstagram.com/p/XYZ/",
+            "https://vxinstagram.com/p/XYZ/",
+            "https://ddinstagram.com/p/XYZ/",
+            "https://instagramez.com/p/XYZ/",
+            "https://ig.me/abc",
+            "https://www.instagram.com/stories/user/123/",
+            "instagram.com/reel/XYZ",
+            "https://flyn.im/vRuygi1",
+        ):
+            with self.subTest(url=url):
+                self.assertTrue(
+                    self.blacklist.blocks_instagram(529128711258374144, url)
+                )
+
+    def test_custom_extra_domain_is_blocked(self) -> None:
+        blacklist = LinkBlacklist(
+            instagram_user_ids=frozenset({529128711258374144}),
+            instagram_domains=frozenset({"example-short.xyz"}),
+        )
+        self.assertTrue(
+            blacklist.blocks_instagram(529128711258374144, "https://example-short.xyz/abc")
+        )
+
+    def test_embed_text_detection(self) -> None:
+        self.assertTrue(mentions_instagram("Chris Seelbach (@seelbachc) • Instagram reel"))
+        self.assertTrue(mentions_instagram("Instagram"))
+        self.assertFalse(mentions_instagram("Pumpkin jumps for Cheese"))
+
+    def test_contains_instagram_link_unknown_shortener(self) -> None:
+        self.assertFalse(contains_instagram_link("https://totally-unknown.link/abc"))
+
+    def test_blacklisted_user_other_link_is_not_blocked(self) -> None:
+        self.assertFalse(
+            self.blacklist.blocks_instagram(529128711258374144, "https://x.com/test/status/1")
+        )
+
+    def test_other_user_instagram_link_is_not_blocked(self) -> None:
+        self.assertFalse(
+            self.blacklist.blocks_instagram(123, "https://www.instagram.com/p/XYZ/")
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

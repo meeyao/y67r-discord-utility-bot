@@ -52,6 +52,12 @@ ConvertCord is a lightweight Discord bot focused on quick conversions between me
   - **Twitter / X** — `twitter.com` / `x.com` → `fxtwitter.com` (normalizes `vxtwitter.com` / `fixupx.com` too)
 - Slash commands: `/sanitize-status` shows current settings, `/sanitize-toggle <platform>` flips a platform on/off at runtime.
 
+### Link Blacklist
+- Instagram links posted by blacklisted user IDs are deleted immediately instead of being rewritten into an embed.
+- Matches all known Instagram domains/mirrors/shorteners (`instagram.com`, `instagr.am`, `oginstagram.com`, `kkinstagram.com`, `vxinstagram.com`, `ddinstagram.com`, `instagramez.com`, `ig.me`, `flyn.im`) and also inspects Discord's generated embed text/URL, so unknown shorteners that expand to an Instagram preview are caught too.
+- Deletion happens on both new messages and edits.
+- Configure under `blacklist.instagram_user_ids` / `blacklist.instagram_domains`, or via `CONVERTCORD_BLACKLIST_INSTAGRAM_USER_IDS` / `CONVERTCORD_BLACKLIST_INSTAGRAM_DOMAINS`.
+
 ### Duplicate Link Detection
 - If a link is posted that was already seen in the same channel within the last 24 hours, the bot reacts with ♻️.
 - Automatically normalizes URL variants (`x.com`, `twitter.com`, `fxtwitter.com`, `vxtwitter.com`, `fixupx.com`, `instagram.com`/`ddinstagram.com`, and generic shortlinks) to catch cross-posts.
@@ -86,6 +92,8 @@ Environment overrides:
 - `CONVERTCORD_URBAN_API_URL` – Base URL for the Urban API. In the bundled Docker image it defaults to the vendored local service at `http://127.0.0.1:8080/api`. Outside Docker it falls back to the public unofficial service unless you override it.
 - `CONVERTCORD_FOOTBALL_API_KEY` – Override for the `football-data.org` API key (takes precedence over the config file).
 - `CONVERTCORD_FOOTBALL_API_SPORTS_KEY` – Override for the `api-sports.io` API key (takes precedence over the config file).
+- `CONVERTCORD_BLACKLIST_INSTAGRAM_USER_IDS` – Comma-delimited list of Discord user IDs whose Instagram links are deleted instead of sanitized (takes precedence over the config file).
+- `CONVERTCORD_BLACKLIST_INSTAGRAM_DOMAINS` – Comma-delimited list of extra domains treated as Instagram for the blacklist (takes precedence over the config file).
 
 ## Running locally
 ```bash

@@ -46,7 +46,7 @@ YOUTUBE_HOSTS = {
 INSTAGRAM_HOSTS = {
     "instagram.com",
     "vxinstagram.com",
-    "kkinstagram.com",
+    "oginstagram.com",
 }
 
 REDDIT_HOSTS = {
