@@ -12,7 +12,7 @@ class DiscordSettings:
     token: Optional[str] = None
     alias: str = "$convert"
     additional_aliases: List[str] = field(
-        default_factory=lambda: ["$currency", "!roll", "!conch", "!time", "!weather", "!temps", "%", "!football", "!wc", "!fifa", "!team", "!ppv", "!rotate", "!gta"]
+        default_factory=lambda: ["$currency", "!roll", "!conch", "!time", "!weather", "!temps", "%", "!football", "!wc", "!fifa", "!team", "!ppv", "!rotate", "!gta", "!smite", "!yuvo", "!mc", "!vanilla"]
     )
     allowed_channel_ids: List[int] = field(default_factory=list)
     allowed_guild_ids: List[int] = field(default_factory=list)

@@ -15,9 +15,18 @@ MEDIA_EXTENSIONS = {
 
 # Domains to ignore for dupe detection (Discord system links, GIF platforms, etc.)
 EXCLUDED_DOMAINS = {
-    "tenor.com", "giphy.com", 
+    "tenor.com", "giphy.com",
     "discord.com", "discordapp.com", "discordapp.net",
-    "discord.gg"
+    "discord.gg",
+    # GIF / media CDN hosts
+    "klipy.com",
+    "gifdeliverynetwork.com",
+    "gifyusercontent.com",
+    "media.tenor.com",
+    "media.discordapp.net",
+    "media.discordapp.com",
+    "cdn.discordapp.com",
+    "pbs.twimg.com",
 }
 
 # Twitter/X variants normalization — extracts just the status ID, ignores username path segment
@@ -75,6 +84,12 @@ class DupeChecker:
             # Migration: add guild_id if missing
             try:
                 conn.execute("ALTER TABLE links ADD COLUMN guild_id INTEGER NOT NULL DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
+            # Migration: add author_id if missing
+            try:
+                conn.execute("ALTER TABLE links ADD COLUMN author_id INTEGER NOT NULL DEFAULT 0")
             except sqlite3.OperationalError:
                 pass
 
@@ -159,32 +174,35 @@ class DupeChecker:
     def is_excluded(self, url: str) -> bool:
         """Determines if a URL should be ignored for duplicate detection."""
         lower_url = url.lower()
-        
-        # 1. Check for media extensions (ignoring query params)
-        clean_path = lower_url.split("?")[0].split("#")[0]
-        if any(clean_path.endswith(ext) for ext in MEDIA_EXTENSIONS):
+
+        # 1. Check for media extensions — match .gif etc. anywhere in the URL
+        #    (catches mid-path like /image.gif/preview and query params like ?format=gif)
+        if any(ext in lower_url for ext in MEDIA_EXTENSIONS):
             return True
-            
+
         # 2. Check for excluded domains
         try:
             # Extract domain
             domain = lower_url.split("://")[-1].split("/")[0].split(":")[0]
             if domain.startswith("www."):
                 domain = domain[4:]
-                
+
             if domain in EXCLUDED_DOMAINS or any(domain.endswith("." + d) for d in EXCLUDED_DOMAINS):
                 return True
         except Exception:
             pass
-            
+
         return False
 
     async def check_and_add(
-        self, guild_id: int, channel_id: int, message_id: int, content: str
+        self, guild_id: int, channel_id: int, message_id: int, content: str,
+        author_id: int = 0,
     ) -> Optional[tuple[int, int]]:
         """
         Extracts links from content, checks if any are dupes in the guild within 24h.
         Adds new links to the DB.
+        The original poster of a link gets up to 3 total posts before it's flagged
+        as a dupe. Other users posting the same link are flagged immediately.
         Returns (original_channel_id, original_message_id) if a dupe was found, else None.
         """
         raw_links = URL_RE.findall(content)
@@ -199,21 +217,22 @@ class DupeChecker:
         normalized_links = {self.normalize_url(link) for link in links}
         
         original: Optional[tuple[int, int]] = None
+        count: int = 0
         now = datetime.now(timezone.utc)
         day_ago = now - timedelta(hours=24)
 
         def _db_op():
-            nonlocal original
+            nonlocal original, count
             with sqlite3.connect(self.db_path) as conn:
                 # Cleanup old entries first
                 conn.execute("DELETE FROM links WHERE created_at < ?", (day_ago.isoformat(),))
                 
                 found_dupe = False
                 for norm_url in normalized_links:
-                    # Check if exists
+                    # Find the earliest existing post of this link
                     cursor = conn.execute(
                         """
-                        SELECT channel_id, message_id
+                        SELECT channel_id, message_id, author_id
                         FROM links
                         WHERE (guild_id = ? OR guild_id = 0)
                           AND normalized_url = ?
@@ -225,14 +244,36 @@ class DupeChecker:
                     )
                     row = cursor.fetchone()
                     if row:
+                        orig_author = row[2]
+                        if orig_author == author_id and author_id != 0:
+                            # Same author — count how many times they've posted this link
+                            cnt_cursor = conn.execute(
+                                """
+                                SELECT COUNT(*) FROM links
+                                WHERE (guild_id = ? OR guild_id = 0)
+                                  AND normalized_url = ?
+                                  AND author_id = ?
+                                  AND created_at >= ?
+                                """,
+                                (guild_id, norm_url, author_id, day_ago.isoformat())
+                            )
+                            count = cnt_cursor.fetchone()[0]
+                            if count < 3:
+                                # Same author, under 3 posts — allow it
+                                conn.execute(
+                                    "INSERT INTO links (guild_id, channel_id, message_id, normalized_url, author_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (guild_id, channel_id, message_id, norm_url, author_id, now.isoformat())
+                                )
+                                continue
+                        # Different author, or same author at 3+ posts — dupe
                         if not found_dupe:
                             original = (row[0], row[1])
                             found_dupe = True
                     else:
                         # Add new link
                         conn.execute(
-                            "INSERT INTO links (guild_id, channel_id, message_id, normalized_url, created_at) VALUES (?, ?, ?, ?, ?)",
-                            (guild_id, channel_id, message_id, norm_url, now.isoformat())
+                            "INSERT INTO links (guild_id, channel_id, message_id, normalized_url, author_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                            (guild_id, channel_id, message_id, norm_url, author_id, now.isoformat())
                         )
                 conn.commit()
 
@@ -240,7 +281,8 @@ class DupeChecker:
         return original
 
     def index_message(
-        self, guild_id: int, channel_id: int, message_id: int, content: str, created_at: datetime
+        self, guild_id: int, channel_id: int, message_id: int, content: str,
+        created_at: datetime, author_id: int = 0,
     ) -> int:
         """
         Insert-only backfill: extracts links from content and records them with
@@ -268,9 +310,9 @@ class DupeChecker:
                 ).fetchone()
                 if not existing:
                     conn.execute(
-                        "INSERT INTO links (guild_id, channel_id, message_id, normalized_url, created_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (guild_id, channel_id, message_id, norm_url, created_at.isoformat()),
+                        "INSERT INTO links (guild_id, channel_id, message_id, normalized_url, author_id, created_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (guild_id, channel_id, message_id, norm_url, author_id, created_at.isoformat()),
                     )
                     inserted += 1
             conn.commit()

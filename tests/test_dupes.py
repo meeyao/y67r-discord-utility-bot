@@ -267,5 +267,109 @@ class DupeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id + 4, content_tenor))
         self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id + 5, content_tenor))
 
+    async def test_gif_midpath_exclusion(self):
+        """URLs with .gif anywhere in the path (not just at the end) should be excluded."""
+        guild_id = 0
+        channel_id = 1
+        msg_id = 301
+
+        # .gif mid-path (e.g. trailing segment after the extension)
+        content = "https://pbs.twimg.com/tweet_video_thumb/ABC.gif:123"
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id, content))
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id + 1, content))
+
+    async def test_gif_query_param_exclusion(self):
+        """URLs with .gif in query params (e.g. ?format=gif) should be excluded."""
+        guild_id = 0
+        channel_id = 1
+        msg_id = 401
+
+        content = "https://pbs.twimg.com/tweet_video/ABC123?format=gif"
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id, content))
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id + 1, content))
+
+    async def test_new_gif_domains_exclusion(self):
+        """Newly added GIF domains should be excluded."""
+        guild_id = 0
+        channel_id = 1
+        msg_id = 501
+
+        domains = [
+            "https://klipy.com/view/something",
+            "https://gifdeliverynetwork.com/abc",
+            "https://gifyusercontent.com/abc",
+        ]
+        for i, url in enumerate(domains):
+            content = f"GIF: {url}"
+            self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id + i * 2, content))
+            self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id + i * 2 + 1, content))
+
+    async def test_discord_cdn_gif_exclusion(self):
+        """Discord CDN URLs that are GIFs should be excluded."""
+        guild_id = 0
+        channel_id = 1
+        msg_id = 601
+
+        # media.discordapp.net is now in EXCLUDED_DOMAINS
+        content = "https://media.discordapp.net/attachments/123/456/file.gif"
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id, content))
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, msg_id + 1, content))
+
+    async def test_same_author_gets_3_tries(self):
+        """Original poster can share the same link up to 3 times before it's flagged."""
+        guild_id = 1
+        channel_id = 1
+        author_id = 100
+        content = "Check this: https://twitter.com/user/status/999"
+
+        # 1st post — allowed
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 1001, content, author_id=author_id))
+        # 2nd post — allowed (under 3)
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 1002, content, author_id=author_id))
+        # 3rd post — allowed (exactly 3)
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 1003, content, author_id=author_id))
+        # 4th post — flagged as dupe (at 3+)
+        result = await self.checker.check_and_add(guild_id, channel_id, 1004, content, author_id=author_id)
+        self.assertEqual(result, (channel_id, 1001))
+
+    async def test_different_author_flagged_immediately(self):
+        """A different user posting the same link is flagged as a dupe right away."""
+        guild_id = 1
+        channel_id = 1
+        content = "Check this: https://twitter.com/user/status/888"
+
+        # Author A posts
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 2001, content, author_id=100))
+        # Author B posts same link — dupe
+        result = await self.checker.check_and_add(guild_id, channel_id, 2002, content, author_id=200)
+        self.assertEqual(result, (channel_id, 2001))
+
+    async def test_same_author_over_limit_different_author_always_dupe(self):
+        """After original poster hits 3 tries, 4th is dupe. Different author is always dupe."""
+        guild_id = 1
+        channel_id = 1
+        content = "Check this: https://twitter.com/user/status/777"
+
+        # Author A posts 3 times — all allowed
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 3001, content, author_id=100))
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 3002, content, author_id=100))
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 3003, content, author_id=100))
+        # Author A 4th time — dupe
+        result = await self.checker.check_and_add(guild_id, channel_id, 3004, content, author_id=100)
+        self.assertEqual(result, (channel_id, 3001))
+        # Author B — also dupe
+        result = await self.checker.check_and_add(guild_id, channel_id, 3005, content, author_id=200)
+        self.assertEqual(result, (channel_id, 3001))
+
+    async def test_no_author_id_defaults_to_dupe(self):
+        """When author_id is 0 (not provided), old behavior: always dupe."""
+        guild_id = 1
+        channel_id = 1
+        content = "Check this: https://twitter.com/user/status/666"
+
+        self.assertIsNone(await self.checker.check_and_add(guild_id, channel_id, 4001, content))
+        result = await self.checker.check_and_add(guild_id, channel_id, 4002, content)
+        self.assertEqual(result, (channel_id, 4001))
+
 if __name__ == "__main__":
     unittest.main()

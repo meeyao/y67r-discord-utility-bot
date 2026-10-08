@@ -1012,47 +1012,51 @@ class FootballService:
             ms.sort(key=lambda m: m.get("utcDate", ""))
             sorted_by_stage[s] = ms
 
-        for stage in stage_list:
-            if stage == "GROUP_STAGE":
-                continue
-            prev_idx = stage_list.index(stage) - 1
-            prev_stage = stage_list[prev_idx]
-            prev_matches = sorted_by_stage.get(prev_stage, [])
-            curr_matches = sorted_by_stage.get(stage, [])
-
-            prev_winners: List[Optional[str]] = []
-            prev_losers: List[Optional[str]] = []
-            for pm in prev_matches:
+        winners_by_stage: Dict[str, List[Optional[str]]] = {}
+        losers_by_stage: Dict[str, List[Optional[str]]] = {}
+        for s in stage_list:
+            stage_matches = sorted_by_stage.get(s, [])
+            w: List[Optional[str]] = []
+            l: List[Optional[str]] = []
+            for pm in stage_matches:
                 status = pm.get("status", "")
                 winner = pm.get("score", {}).get("winner")
                 if status == "FINISHED" and winner:
                     home_name = pm.get("homeTeam", {}).get("name")
                     away_name = pm.get("awayTeam", {}).get("name")
                     if winner == "HOME_TEAM":
-                        prev_winners.append(home_name)
-                        prev_losers.append(away_name)
+                        w.append(home_name)
+                        l.append(away_name)
                     elif winner == "AWAY_TEAM":
-                        prev_winners.append(away_name)
-                        prev_losers.append(home_name)
+                        w.append(away_name)
+                        l.append(home_name)
                     else:
-                        prev_winners.append(None)
-                        prev_losers.append(None)
+                        w.append(None)
+                        l.append(None)
                 else:
-                    prev_winners.append(None)
-                    prev_losers.append(None)
+                    w.append(None)
+                    l.append(None)
+            winners_by_stage[s] = w
+            losers_by_stage[s] = l
+
+        for stage in stage_list:
+            if stage == "GROUP_STAGE":
+                continue
+            curr_matches = sorted_by_stage.get(stage, [])
 
             for i, cm in enumerate(curr_matches):
                 for side in ("homeTeam", "awayTeam"):
                     team = cm.get(side, {})
-                    if team.get("name") is not None:
+                    name = team.get("name")
+                    if name and name not in ("?", "", "TBD"):
                         continue
                     key = (stage, i, side)
                     feeder = _BRACKET_FEEDERS.get(key)
                     if not feeder:
                         continue
-                    _, prev_i = feeder
+                    src_stage, prev_i = feeder
                     use_losers = stage == "THIRD_PLACE"
-                    source = prev_losers if use_losers else prev_winners
+                    source = losers_by_stage.get(src_stage, []) if use_losers else winners_by_stage.get(src_stage, [])
                     if prev_i < len(source) and source[prev_i] is not None:
                         team["name"] = source[prev_i]
 

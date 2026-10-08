@@ -158,7 +158,8 @@ class _ConvertClient(discord.Client):
         if self.sanitize_platforms.detect_dupes:
             guild_id = message.guild.id if message.guild else 0
             original = await self.dupe_checker.check_and_add(
-                guild_id, message.channel.id, message.id, content
+                guild_id, message.channel.id, message.id, content,
+                author_id=message.author.id,
             )
             if original:
                 is_dupe = True
@@ -1450,6 +1451,18 @@ class _ConvertClient(discord.Client):
         async def slash_gta(interaction: discord.Interaction) -> None:
             await self._handle_slash_command(interaction, "", "gta")
 
+        @self.tree.command(name="mc", description="Show Minecraft server info.")
+        async def slash_mc(interaction: discord.Interaction) -> None:
+            await self._handle_slash_command(interaction, "", "mc")
+
+        @self.tree.command(name="minecraft", description="Show Minecraft server info.")
+        async def slash_minecraft(interaction: discord.Interaction) -> None:
+            await self._handle_slash_command(interaction, "", "mc")
+
+        @self.tree.command(name="server", description="Show Minecraft server info.")
+        async def slash_server(interaction: discord.Interaction) -> None:
+            await self._handle_slash_command(interaction, "", "mc")
+
         @self.tree.command(name="remind", description="Set a one-time reminder (when you next chat in this channel).")
         @app_commands.describe(target="The user or role to remind", message="The reminder message")
         async def slash_remind(interaction: discord.Interaction, target: discord.User | discord.Role, message: str) -> None:
@@ -1561,7 +1574,8 @@ class _ConvertClient(discord.Client):
                         continue
                     messages_scanned += 1
                     links_indexed += self.dupe_checker.index_message(
-                        guild_id, msg.channel.id, msg.id, msg.content, msg.created_at
+                        guild_id, msg.channel.id, msg.id, msg.content, msg.created_at,
+                        author_id=msg.author.id,
                     )
             except discord.Forbidden:
                 await interaction.followup.send(

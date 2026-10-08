@@ -139,6 +139,8 @@ class ConvertService:
             args = ["urban", *args]
         elif alias_hint == "gta":
             args = ["gta", *args]
+        elif alias_hint == "mc":
+            args = ["mc", *args]
 
         if not args:
             if alias_hint == "percent":
@@ -170,6 +172,8 @@ class ConvertService:
                 return self._handle_smite()
             if first in {"gta", "$gta", "!gta"}:
                 return self._handle_gta()
+            if first in {"mc", "$mc", "!mc", "vanilla", "$vanilla", "!vanilla", "minecraft", "$minecraft", "!minecraft", "server", "$server", "!server"}:
+                return self._handle_mc()
             if first in {"price", "$price", "stock", "$stock", "stocks", "crypto", "$crypto"}:
                 return None
 
@@ -475,6 +479,18 @@ class ConvertService:
     def _handle_gta(self) -> ServiceResponse:
         return ServiceResponse(gta_countdown())
 
+    def _handle_mc(self) -> ServiceResponse:
+        return ServiceResponse(
+            "**Minecraft Servers**\n"
+            "**Vanilla**\n"
+            "Version: 26.2\n"
+            "Mods: Simple Voice Chat\n"
+            "IP: `vanilla.mewdit.to`\n\n"
+            "**ATM10**\n"
+            "Mods: ATM10 + Simple Voice Chat\n"
+            "IP: `mc.mewdit.to`"
+        )
+
     async def _handle_urban(self, args: Sequence[str]) -> ServiceResponse:
         term = " ".join(args).strip()
         if not term:
@@ -532,7 +548,7 @@ class ConvertService:
             return "time"
         if cleaned in {"weather"}:
             return "weather"
-        if cleaned in {"smite"}:
+        if cleaned in {"smite", "yuvo"}:
             return "smite"
         if cleaned in {"temps"}:
             return "temps"
@@ -540,6 +556,8 @@ class ConvertService:
             return "urban"
         if cleaned in {"gta"}:
             return "gta"
+        if cleaned in {"mc", "vanilla", "minecraft", "server"}:
+            return "mc"
         return None
 
     async def _get_temps(self) -> Dict[str, List[float]]:

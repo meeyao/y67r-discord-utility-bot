@@ -89,7 +89,7 @@ async def extract_and_sanitize(
         for match in INSTAGRAM_RE.finditer(content):
             ptype = match.group("type")
             data = match.group("data")
-            clean_url = f"https://www.vxinstagram.com/{ptype}{data}"
+            clean_url = f"https://www.kkinstagram.com/{ptype}{data}"
             
             label = "Reel" if ptype.lower().startswith("reel") else "Post"
             results.append(_format_output(content, match, clean_url, "Instagram", label))
